@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+.env.*
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/lib/
+
+# Reference codebases
+refs/
+
+# Claude
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
