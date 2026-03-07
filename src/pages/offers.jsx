@@ -1,13 +1,12 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router'
+import { Link, useOutletContext } from 'react-router'
 import { queryOrderEvents } from '../lib/contract'
-import { encodeOrder } from '../lib/encoding'
 import { truncateAddress } from '../lib/wallet'
 import AddressDisplay from '../components/address-display'
-import { CONTRACT_ADDRESSES, CHAINS } from '../lib/constants'
+import { CONTRACT_ADDRESSES } from '../lib/constants'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
-const ASSET_TYPE_LABELS = ['ERC-721', 'ERC-1155']
+const PAGE_SIZE = 20
 
 // Use the first chain that has a deployed contract
 const DEFAULT_CHAIN_ID = Number(
@@ -15,10 +14,12 @@ const DEFAULT_CHAIN_ID = Number(
 )
 
 export default function Offers() {
-  const [view, setView] = useState('open')
+  const wallet = useOutletContext()
+  const [tab, setTab] = useState('mine')
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   useEffect(() => {
     if (!DEFAULT_CHAIN_ID || !CONTRACT_ADDRESSES[DEFAULT_CHAIN_ID]) {
@@ -63,26 +64,48 @@ export default function Offers() {
     return () => { cancelled = true }
   }, [])
 
+  // Reset pagination when switching tabs
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE)
+  }, [tab])
+
+  const userAddr = wallet?.address?.toLowerCase()
+
   const filtered = orders.filter((o) => {
-    if (view === 'open') return o.status === 'open'
-    if (view === 'filled') return o.status === 'filled'
+    if (tab === 'mine') {
+      if (!userAddr) return false
+      const isMaker = o.maker.toLowerCase() === userAddr
+      const isTaker = o.taker !== ZERO_ADDRESS && o.taker.toLowerCase() === userAddr
+      return isMaker || isTaker
+    }
+    if (tab === 'open') return o.status === 'open'
+    if (tab === 'filled') return o.status === 'filled'
     return false
   })
 
+  const visible = filtered.slice(0, visibleCount)
+  const hasMore = visibleCount < filtered.length
+
   return (
     <div className="page offers">
-      <h1>Browse Offers</h1>
+      <h1>Offers</h1>
 
       <div className="offers-tabs">
         <button
-          className={`tab ${view === 'open' ? 'active' : ''}`}
-          onClick={() => setView('open')}
+          className={`tab ${tab === 'mine' ? 'active' : ''}`}
+          onClick={() => setTab('mine')}
         >
-          Open
+          My Offers
         </button>
         <button
-          className={`tab ${view === 'filled' ? 'active' : ''}`}
-          onClick={() => setView('filled')}
+          className={`tab ${tab === 'open' ? 'active' : ''}`}
+          onClick={() => setTab('open')}
+        >
+          All Open
+        </button>
+        <button
+          className={`tab ${tab === 'filled' ? 'active' : ''}`}
+          onClick={() => setTab('filled')}
         >
           Completed
         </button>
@@ -91,34 +114,40 @@ export default function Offers() {
       {loading && <p className="text-muted">Loading offers...</p>}
       {error && <p className="form-error">{error}</p>}
 
-      {!loading && !error && filtered.length === 0 && (
+      {!loading && !error && tab === 'mine' && !wallet && (
+        <p className="text-muted">Connect your wallet to see your offers.</p>
+      )}
+
+      {!loading && !error && filtered.length === 0 && (tab !== 'mine' || wallet) && (
         <p className="text-muted">
-          {view === 'open' ? 'No open offers.' : 'No completed swaps yet.'}
+          {tab === 'mine' ? 'No offers involving your wallet.' :
+           tab === 'open' ? 'No open offers.' : 'No completed swaps yet.'}
         </p>
       )}
 
-      {!loading && filtered.length > 0 && (
+      {!loading && visible.length > 0 && (
         <div className="offers-list">
-          {filtered.map((order) => (
+          {visible.map((order) => (
             <OfferCard key={order.orderHash} order={order} chainId={DEFAULT_CHAIN_ID} />
           ))}
         </div>
+      )}
+
+      {hasMore && (
+        <button
+          className="btn btn-secondary"
+          style={{ marginTop: '1rem' }}
+          onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+        >
+          Load More ({filtered.length - visibleCount} remaining)
+        </button>
       )}
     </div>
   )
 }
 
 function OfferCard({ order, chainId }) {
-  const contractAddress = CONTRACT_ADDRESSES[chainId]
-  const encoded = encodeOrder({
-    maker: order.maker,
-    taker: order.taker,
-    makerAssets: order.makerAssets,
-    takerAssets: order.takerAssets,
-    expiration: order.expiration,
-    salt: order.salt,
-  })
-  const swapUrl = `/swap/${chainId}/${contractAddress}/${encoded}`
+  const swapUrl = `/swap/${chainId}/${order.transactionHash}`
 
   return (
     <Link to={swapUrl} className="offer-card">

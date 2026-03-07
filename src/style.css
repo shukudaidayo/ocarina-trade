@@ -693,3 +693,57 @@ footer {
 }
 
 .status-expired { background: #3a2a1a; color: #ca4; }
+
+/* Transaction checklist */
+.tx-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tx-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  padding: 0.3rem 0;
+}
+
+.tx-step-icon {
+  width: 1.2rem;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.tx-step-label {
+  flex: 1;
+  font-family: monospace;
+  font-size: 0.8rem;
+}
+
+.tx-step-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.tx-step-pending .tx-step-icon { color: var(--text-muted); }
+.tx-step-signing .tx-step-icon { color: var(--accent); animation: pulse 1.5s infinite; }
+.tx-step-confirming .tx-step-icon { color: #ca4; animation: pulse 1.5s infinite; }
+.tx-step-done .tx-step-icon { color: #4c4; }
+.tx-step-failed .tx-step-icon { color: #c44; }
+
+.tx-step-error {
+  display: block;
+  font-size: 0.75rem;
+  color: #c44;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

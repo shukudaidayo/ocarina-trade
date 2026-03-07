@@ -13,7 +13,8 @@ const metadata = {
 
 createAppKit({
   adapters: [new EthersAdapter()],
-  networks: [mainnet, sepolia],
+  networks: [sepolia, mainnet],
+  defaultNetwork: sepolia,
   metadata,
   projectId,
   features: {

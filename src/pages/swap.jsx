@@ -1,94 +1,100 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useOutletContext } from 'react-router'
-import { decodeOrder } from '../lib/encoding'
-import { getOrderStatus, fillOrder, cancelOrder, ensureApproval, computeOrderHash, ORDER_STATUS } from '../lib/contract'
+import { getOrderFromTx, getOrderStatus, fillOrder, cancelOrder, ensureApproval, ORDER_STATUS } from '../lib/contract'
 import AssetCard from '../components/asset-card'
 import AddressDisplay from '../components/address-display'
 import WarningBanner from '../components/warning-banner'
+import { truncateAddress } from '../lib/wallet'
+import TxChecklist, { buildSteps } from '../components/tx-checklist'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 export default function Swap() {
-  const { chainId, contractAddress, encodedOrder } = useParams()
+  const { chainId, txHash } = useParams()
   const wallet = useOutletContext()
 
   const [order, setOrder] = useState(null)
-  const [decodeError, setDecodeError] = useState(null)
+  const [contractAddress, setContractAddress] = useState(null)
+  const [loadError, setLoadError] = useState(null)
   const [orderHash, setOrderHash] = useState(null)
   const [onChainStatus, setOnChainStatus] = useState(null)
   const [statusLoading, setStatusLoading] = useState(true)
-  const [actionStatus, setActionStatus] = useState(null)
+  const [steps, setSteps] = useState([])
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  // Decode order from URL
+  // Fetch order data from tx hash
   useEffect(() => {
-    try {
-      const decoded = decodeOrder(encodedOrder)
-      setOrder(decoded)
-    } catch {
-      setDecodeError('Invalid swap link. The order data could not be decoded.')
-    }
-  }, [encodedOrder])
-
-  // Compute hash and fetch on-chain status
-  useEffect(() => {
-    if (!order) return
-
     let cancelled = false
-    async function fetchStatus() {
+    async function load() {
       try {
-        const hash = computeOrderHash(
-          order.maker,
-          order.taker,
-          order.makerAssets,
-          order.takerAssets,
-          order.expiration,
-          order.salt,
-        )
-        setOrderHash(hash)
+        const data = await getOrderFromTx(Number(chainId), txHash)
+        if (cancelled) return
+        setOrder(data)
+        setContractAddress(data.contractAddress)
+        setOrderHash(data.orderHash)
 
-        const status = await getOrderStatus(Number(chainId), contractAddress, hash)
+        const status = await getOrderStatus(Number(chainId), data.contractAddress, data.orderHash)
         if (!cancelled) {
           setOnChainStatus(status)
           setStatusLoading(false)
         }
       } catch (err) {
-        console.error('Failed to fetch order status:', err)
+        console.error('Failed to load order:', err)
         if (!cancelled) {
-          setOnChainStatus(null)
+          setLoadError(err.message || 'Failed to load order from transaction.')
           setStatusLoading(false)
         }
       }
     }
-    fetchStatus()
+    load()
     return () => { cancelled = true }
-  }, [order, chainId, contractAddress])
+  }, [chainId, txHash])
 
   const handleFill = useCallback(async () => {
     if (!wallet || !order) return
     setError(null)
     setSubmitting(true)
 
+    const txSteps = buildSteps(order.takerAssets, 'Accept Swap')
+    setSteps(txSteps)
+
+    function updateStep(index, update) {
+      txSteps[index] = { ...txSteps[index], ...update }
+      setSteps([...txSteps])
+    }
+
     try {
-      // Approve taker assets
-      const uniqueTokens = [...new Set(order.takerAssets.map((a) => a.token.toLowerCase()))]
-      for (const tokenAddr of uniqueTokens) {
-        setActionStatus(`Approving ${truncateAddress(tokenAddr)}...`)
-        const tx = await ensureApproval(wallet.provider, wallet.chainId, tokenAddr, wallet.address)
-        if (tx) await tx.wait()
+      const approvalSteps = txSteps.filter((s) => s.type === 'approval')
+      for (let i = 0; i < approvalSteps.length; i++) {
+        const step = approvalSteps[i]
+        const stepIndex = txSteps.indexOf(step)
+        updateStep(stepIndex, { status: 'signing' })
+
+        const tx = await ensureApproval(wallet.provider, wallet.chainId, step.tokenAddress, wallet.address)
+        if (tx) {
+          updateStep(stepIndex, { status: 'confirming' })
+          await tx.wait()
+        }
+        updateStep(stepIndex, { status: 'done' })
       }
 
-      setActionStatus('Sending fillOrder transaction...')
-      await fillOrder(wallet.provider, wallet.chainId, order)
+      const actionIndex = txSteps.length - 1
+      updateStep(actionIndex, { status: 'signing' })
+      const { wait } = await fillOrder(wallet.provider, wallet.chainId, order)
+      updateStep(actionIndex, { status: 'confirming' })
+      await wait()
+      updateStep(actionIndex, { status: 'done' })
 
       setOnChainStatus(2) // FILLED
-      setActionStatus(null)
     } catch (err) {
       console.error(err)
+      const failedIndex = txSteps.findIndex((s) => s.status === 'signing' || s.status === 'confirming')
+      if (failedIndex !== -1) {
+        updateStep(failedIndex, { status: 'failed', error: err.reason || err.message || 'Failed' })
+      }
       setError(err.reason || err.message || 'Transaction failed')
-      setActionStatus(null)
     } finally {
       setSubmitting(false)
     }
@@ -99,16 +105,26 @@ export default function Swap() {
     setError(null)
     setSubmitting(true)
 
+    const txSteps = [{ label: 'Cancel Order', status: 'pending', type: 'action' }]
+    setSteps(txSteps)
+
+    function updateStep(index, update) {
+      txSteps[index] = { ...txSteps[index], ...update }
+      setSteps([...txSteps])
+    }
+
     try {
-      setActionStatus('Sending cancelOrder transaction...')
-      await cancelOrder(wallet.provider, wallet.chainId, orderHash)
+      updateStep(0, { status: 'signing' })
+      const { wait } = await cancelOrder(wallet.provider, wallet.chainId, orderHash)
+      updateStep(0, { status: 'confirming' })
+      await wait()
+      updateStep(0, { status: 'done' })
 
       setOnChainStatus(3) // CANCELLED
-      setActionStatus(null)
     } catch (err) {
       console.error(err)
+      updateStep(0, { status: 'failed', error: err.reason || err.message || 'Failed' })
       setError(err.reason || err.message || 'Transaction failed')
-      setActionStatus(null)
     } finally {
       setSubmitting(false)
     }
@@ -120,16 +136,16 @@ export default function Swap() {
     setTimeout(() => setCopied(false), 2000)
   }, [])
 
-  if (decodeError) {
+  if (loadError) {
     return (
       <div className="page swap">
         <h1>Invalid Swap</h1>
-        <p className="form-error">{decodeError}</p>
+        <p className="form-error">{loadError}</p>
       </div>
     )
   }
 
-  if (!order) return null
+  if (!order) return <div className="page swap"><p className="text-muted">Loading order...</p></div>
 
   const isExpired = order.expiration > 0 && order.expiration < Date.now() / 1000
   const isMaker = wallet && wallet.address.toLowerCase() === order.maker.toLowerCase()
@@ -205,7 +221,7 @@ export default function Swap() {
       </div>
 
       {error && <p className="form-error">{error}</p>}
-      {actionStatus && <p className="form-status">{actionStatus}</p>}
+      <TxChecklist steps={steps} />
 
       {!wallet && isOpen && (
         <p className="text-muted">Connect your wallet to accept or cancel this swap.</p>

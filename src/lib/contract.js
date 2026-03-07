@@ -1,12 +1,7 @@
-import { AbiCoder, BrowserProvider, Contract, JsonRpcProvider, keccak256 } from 'ethers'
-import { CONTRACT_ABI, CONTRACT_ADDRESSES, CHAINS } from './constants'
+import { BrowserProvider, Contract, Interface, JsonRpcProvider } from 'ethers'
+import { CONTRACT_ABI, CONTRACT_ADDRESSES, CONTRACT_DEPLOY_BLOCKS, CHAINS } from './constants'
 
-const ERC721_ABI = [
-  'function isApprovedForAll(address owner, address operator) view returns (bool)',
-  'function setApprovalForAll(address operator, bool approved)',
-]
-
-const ERC1155_ABI = [
+const APPROVAL_ABI = [
   'function isApprovedForAll(address owner, address operator) view returns (bool)',
   'function setApprovalForAll(address operator, bool approved)',
 ]
@@ -30,15 +25,15 @@ export async function getSwapContract(rawProvider, chainId) {
 }
 
 /**
- * Check if a token contract is approved for the swap contract, and request approval if not.
- * Works for both ERC-721 and ERC-1155 (both use isApprovedForAll/setApprovalForAll).
+ * Ensure a token contract is approved for the swap contract via setApprovalForAll.
+ * Works for both ERC-721 and ERC-1155.
  */
 export async function ensureApproval(rawProvider, chainId, tokenAddress, owner) {
   const swapAddress = CONTRACT_ADDRESSES[chainId]
   if (!swapAddress) throw new Error(`No contract deployed on chain ${chainId}`)
 
   const signer = await getSigner(rawProvider)
-  const token = new Contract(tokenAddress, ERC721_ABI, signer)
+  const token = new Contract(tokenAddress, APPROVAL_ABI, signer)
 
   const approved = await token.isApprovedForAll(owner, swapAddress)
   if (approved) return null
@@ -48,7 +43,7 @@ export async function ensureApproval(rawProvider, chainId, tokenAddress, owner) 
 }
 
 /**
- * Call createOrder on the swap contract. Returns the tx receipt and order hash.
+ * Send createOrder tx. Returns { tx, wait } where wait() resolves to { receipt, orderHash }.
  */
 export async function createOrder(rawProvider, chainId, { taker, makerAssets, takerAssets, expiration, salt }) {
   const contract = await getSwapContract(rawProvider, chainId)
@@ -64,22 +59,56 @@ export async function createOrder(rawProvider, chainId, { taker, makerAssets, ta
     salt,
   )
 
-  const receipt = await tx.wait()
-
-  // Extract orderHash from OrderCreated event
-  const log = receipt.logs.find((l) => {
-    try {
-      return contract.interface.parseLog(l)?.name === 'OrderCreated'
-    } catch {
-      return false
-    }
-  })
-
-  const orderHash = log ? contract.interface.parseLog(log).args.orderHash : null
-  return { receipt, orderHash }
+  return {
+    tx,
+    wait: async () => {
+      const receipt = await tx.wait()
+      const log = receipt.logs.find((l) => {
+        try {
+          return contract.interface.parseLog(l)?.name === 'OrderCreated'
+        } catch {
+          return false
+        }
+      })
+      const orderHash = log ? contract.interface.parseLog(log).args.orderHash : null
+      return { receipt, orderHash }
+    },
+  }
 }
 
 export const ORDER_STATUS = ['NONE', 'OPEN', 'FILLED', 'CANCELLED']
+
+/**
+ * Fetch order data from a createOrder transaction hash.
+ * Returns the parsed OrderCreated event data.
+ */
+export async function getOrderFromTx(chainId, txHash) {
+  const chain = CHAINS[chainId]
+  if (!chain) throw new Error(`Unsupported chain ${chainId}`)
+  const provider = new JsonRpcProvider(chain.rpcUrl)
+  const receipt = await provider.getTransactionReceipt(txHash)
+  if (!receipt) throw new Error('Transaction not found')
+
+  const iface = new Interface(CONTRACT_ABI)
+  for (const log of receipt.logs) {
+    try {
+      const parsed = iface.parseLog(log)
+      if (parsed?.name === 'OrderCreated') {
+        return {
+          contractAddress: receipt.to,
+          orderHash: parsed.args.orderHash,
+          maker: parsed.args.maker,
+          taker: parsed.args.taker,
+          makerAssets: parsed.args.makerAssets.map(parseAssetFromEvent),
+          takerAssets: parsed.args.takerAssets.map(parseAssetFromEvent),
+          expiration: Number(parsed.args.expiration),
+          salt: Number(parsed.args.salt),
+        }
+      }
+    } catch {}
+  }
+  throw new Error('No OrderCreated event found in transaction')
+}
 
 /**
  * Get the on-chain status of an order using a read-only provider.
@@ -94,7 +123,7 @@ export async function getOrderStatus(chainId, contractAddress, orderHash) {
 }
 
 /**
- * Call fillOrder on the swap contract.
+ * Send fillOrder tx. Returns { tx, wait }.
  */
 export async function fillOrder(rawProvider, chainId, { maker, taker, makerAssets, takerAssets, expiration, salt }) {
   const contract = await getSwapContract(rawProvider, chainId)
@@ -106,28 +135,16 @@ export async function fillOrder(rawProvider, chainId, { maker, taker, makerAsset
     expiration,
     salt,
   )
-  return tx.wait()
+  return { tx, wait: () => tx.wait() }
 }
 
 /**
- * Call cancelOrder on the swap contract.
+ * Send cancelOrder tx. Returns { tx, wait }.
  */
 export async function cancelOrder(rawProvider, chainId, orderHash) {
   const contract = await getSwapContract(rawProvider, chainId)
   const tx = await contract.cancelOrder(orderHash)
-  return tx.wait()
-}
-
-/**
- * Compute the order hash locally (matches the contract's keccak256 encoding).
- */
-export function computeOrderHash(maker, taker, makerAssets, takerAssets, expiration, salt) {
-  const coder = AbiCoder.defaultAbiCoder()
-  const encoded = coder.encode(
-    ['address', 'address', 'tuple(address,uint256,uint256,uint8)[]', 'tuple(address,uint256,uint256,uint8)[]', 'uint256', 'uint256'],
-    [maker, taker, makerAssets.map(formatAsset), takerAssets.map(formatAsset), expiration, salt],
-  )
-  return keccak256(encoded)
+  return { tx, wait: () => tx.wait() }
 }
 
 /**
@@ -140,10 +157,24 @@ export async function queryOrderEvents(chainId, contractAddress) {
   const provider = new JsonRpcProvider(chain.rpcUrl)
   const contract = new Contract(contractAddress, CONTRACT_ABI, provider)
 
+  const fromBlock = CONTRACT_DEPLOY_BLOCKS[chainId] ?? 0
+  const latestBlock = await provider.getBlockNumber()
+
+  async function queryInChunks(eventName) {
+    const chunkSize = 49999
+    const logs = []
+    for (let start = fromBlock; start <= latestBlock; start += chunkSize + 1) {
+      const end = Math.min(start + chunkSize, latestBlock)
+      const chunk = await contract.queryFilter(eventName, start, end)
+      logs.push(...chunk)
+    }
+    return logs
+  }
+
   const [createdLogs, filledLogs, cancelledLogs] = await Promise.all([
-    contract.queryFilter('OrderCreated'),
-    contract.queryFilter('OrderFilled'),
-    contract.queryFilter('OrderCancelled'),
+    queryInChunks('OrderCreated'),
+    queryInChunks('OrderFilled'),
+    queryInChunks('OrderCancelled'),
   ])
 
   const created = createdLogs.map((log) => ({

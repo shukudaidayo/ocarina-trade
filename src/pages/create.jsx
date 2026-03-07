@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { useOutletContext, useNavigate } from 'react-router'
 import AssetInput from '../components/asset-input'
 import { ensureApproval, createOrder } from '../lib/contract'
-import { encodeOrder } from '../lib/encoding'
 import { CONTRACT_ADDRESSES } from '../lib/constants'
 import { resolveENS } from '../lib/ens'
+import TxChecklist, { buildSteps } from '../components/tx-checklist'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
@@ -20,7 +20,7 @@ export default function Create() {
   const [takerAssets, setTakerAssets] = useState([emptyAsset()])
   const [taker, setTaker] = useState('')
   const [expiration, setExpiration] = useState('')
-  const [status, setStatus] = useState(null)
+  const [steps, setSteps] = useState([])
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [takerEns, setTakerEns] = useState(null)
@@ -84,13 +84,28 @@ export default function Create() {
 
     setSubmitting(true)
 
+    const txSteps = buildSteps(makerAssets, 'Create Order')
+    setSteps(txSteps)
+
+    function updateStep(index, update) {
+      txSteps[index] = { ...txSteps[index], ...update }
+      setSteps([...txSteps])
+    }
+
     try {
-      // Request approvals for maker assets (deduplicate by token address)
-      const uniqueTokens = [...new Set(makerAssets.map((a) => a.token.toLowerCase()))]
-      for (const tokenAddr of uniqueTokens) {
-        setStatus(`Approving ${tokenAddr.slice(0, 6)}...${tokenAddr.slice(-4)}...`)
-        const tx = await ensureApproval(wallet.provider, chainId, tokenAddr, wallet.address)
-        if (tx) await tx.wait()
+      // Request approvals
+      const approvalSteps = txSteps.filter((s) => s.type === 'approval')
+      for (let i = 0; i < approvalSteps.length; i++) {
+        const step = approvalSteps[i]
+        const stepIndex = txSteps.indexOf(step)
+        updateStep(stepIndex, { status: 'signing' })
+
+        const tx = await ensureApproval(wallet.provider, chainId, step.tokenAddress, wallet.address)
+        if (tx) {
+          updateStep(stepIndex, { status: 'confirming' })
+          await tx.wait()
+        }
+        updateStep(stepIndex, { status: 'done' })
       }
 
       // Build order params
@@ -119,23 +134,24 @@ export default function Create() {
         salt,
       }
 
-      setStatus('Sending createOrder transaction...')
-      const { orderHash } = await createOrder(wallet.provider, chainId, orderParams)
+      const actionIndex = txSteps.length - 1
+      updateStep(actionIndex, { status: 'signing' })
+      const { tx, wait } = await createOrder(wallet.provider, chainId, orderParams)
+      updateStep(actionIndex, { status: 'confirming' })
+      await wait()
+      updateStep(actionIndex, { status: 'done' })
 
-      // Build shareable URL
-      const encoded = encodeOrder({
-        maker: wallet.address,
-        ...orderParams,
-      })
-      const contractAddress = CONTRACT_ADDRESSES[chainId]
-      const swapPath = `/swap/${chainId}/${contractAddress}/${encoded}`
+      const swapPath = `/swap/${chainId}/${tx.hash}`
 
-      setStatus(null)
       navigate(swapPath)
     } catch (err) {
       console.error(err)
+      // Mark current signing/confirming step as failed
+      const failedIndex = txSteps.findIndex((s) => s.status === 'signing' || s.status === 'confirming')
+      if (failedIndex !== -1) {
+        updateStep(failedIndex, { status: 'failed', error: err.reason || err.message || 'Failed' })
+      }
       setError(err.reason || err.message || 'Transaction failed')
-      setStatus(null)
     } finally {
       setSubmitting(false)
     }
@@ -213,7 +229,7 @@ export default function Create() {
         </div>
 
         {error && <p className="form-error">{error}</p>}
-        {status && <p className="form-status">{status}</p>}
+        <TxChecklist steps={steps} />
 
         <button type="submit" className="btn btn-primary" disabled={submitting}>
           {submitting ? 'Creating...' : 'Create Swap'}

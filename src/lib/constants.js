@@ -2,12 +2,18 @@ export const IPFS_GATEWAY = 'https://ipfs.io/ipfs/'
 
 export const CHAINS = {
   1: { name: 'Ethereum', rpcUrl: 'https://ethereum-rpc.publicnode.com' },
-  11155111: { name: 'Sepolia', rpcUrl: 'https://rpc.sepolia.org' },
+  11155111: { name: 'Sepolia', rpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com' },
 }
 
 export const CONTRACT_ADDRESSES = {
   1: null,
   11155111: '0x4f105ba0764c6f73502Df969a357467FE3361acb',
+}
+
+// Block number at or before contract deployment — used as fromBlock for event queries
+export const CONTRACT_DEPLOY_BLOCKS = {
+  1: 0,
+  11155111: 10390000,
 }
 
 export const CONTRACT_ABI = [

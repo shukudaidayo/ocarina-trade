@@ -15,7 +15,7 @@ const router = createHashRouter([
     children: [
       { index: true, element: <Home /> },
       { path: 'create', element: <Create /> },
-      { path: 'swap/:chainId/:contractAddress/:encodedOrder', element: <Swap /> },
+      { path: 'swap/:chainId/:txHash', element: <Swap /> },
       { path: 'offers', element: <Offers /> },
     ],
   },
