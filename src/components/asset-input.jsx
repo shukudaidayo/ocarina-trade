@@ -1,13 +1,14 @@
 import AssetCard from './asset-card'
 
 const ASSET_TYPES = [
-  { value: 0, label: 'ERC-721' },
-  { value: 1, label: 'ERC-1155' },
+  { value: 'ERC721', label: 'ERC-721' },
+  { value: 'ERC1155', label: 'ERC-1155' },
 ]
 
 export default function AssetInput({ asset, onChange, onRemove, chainId }) {
   const hasValidAddress = /^0x[0-9a-fA-F]{40}$/.test(asset.token)
   const hasTokenId = asset.tokenId !== '' && asset.tokenId !== undefined
+  const isERC1155 = asset.assetType === 'ERC1155'
 
   return (
     <div className="asset-input">
@@ -29,13 +30,13 @@ export default function AssetInput({ asset, onChange, onRemove, chainId }) {
       <div className="asset-input-row">
         <select
           value={asset.assetType}
-          onChange={(e) => onChange({ ...asset, assetType: Number(e.target.value) })}
+          onChange={(e) => onChange({ ...asset, assetType: e.target.value })}
         >
           {ASSET_TYPES.map((t) => (
             <option key={t.value} value={t.value}>{t.label}</option>
           ))}
         </select>
-        {asset.assetType === 1 && (
+        {isERC1155 && (
           <input
             type="text"
             placeholder="Amount"

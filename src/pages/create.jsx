@@ -2,14 +2,14 @@ import { useState, useEffect, useCallback } from 'react'
 import { useOutletContext, useNavigate } from 'react-router'
 import AssetInput from '../components/asset-input'
 import { ensureApproval, createOrder } from '../lib/contract'
-import { CONTRACT_ADDRESSES } from '../lib/constants'
+import { ZONE_ADDRESSES } from '../lib/constants'
 import { resolveENS } from '../lib/ens'
 import TxChecklist, { buildSteps } from '../components/tx-checklist'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 function emptyAsset() {
-  return { token: '', tokenId: '', amount: '1', assetType: 0 }
+  return { token: '', tokenId: '', amount: '1', assetType: 'ERC721' }
 }
 
 export default function Create() {
@@ -64,8 +64,8 @@ export default function Create() {
     }
 
     const chainId = wallet.chainId
-    if (!CONTRACT_ADDRESSES[chainId]) {
-      setError(`No contract deployed on this chain. Switch to a supported network.`)
+    if (!ZONE_ADDRESSES[chainId]) {
+      setError(`No OTCZone deployed on this chain. Switch to a supported network.`)
       return
     }
 
@@ -76,15 +76,15 @@ export default function Create() {
         setError('Invalid contract address: ' + (asset.token || '(empty)'))
         return
       }
-      if (!asset.tokenId && asset.tokenId !== '0') {
-        setError('Token ID is required for all assets.')
+      if (asset.assetType !== 'ERC20' && !asset.tokenId && asset.tokenId !== '0') {
+        setError('Token ID is required for NFT assets.')
         return
       }
     }
 
     setSubmitting(true)
 
-    const txSteps = buildSteps(makerAssets, 'Create Order')
+    const txSteps = buildSteps(makerAssets, 'Sign Order', 'Register Order')
     setSteps(txSteps)
 
     function updateStep(index, update) {
@@ -93,14 +93,16 @@ export default function Create() {
     }
 
     try {
-      // Request approvals
+      // Request approvals for maker assets to Seaport
       const approvalSteps = txSteps.filter((s) => s.type === 'approval')
       for (let i = 0; i < approvalSteps.length; i++) {
         const step = approvalSteps[i]
         const stepIndex = txSteps.indexOf(step)
         updateStep(stepIndex, { status: 'signing' })
 
-        const tx = await ensureApproval(wallet.provider, chainId, step.tokenAddress, wallet.address)
+        const asset = makerAssets.find((a) => a.token.toLowerCase() === step.tokenAddress.toLowerCase())
+        const itemType = asset?.assetType === 'ERC20' ? 1 : asset?.assetType === 'ERC1155' ? 3 : 2
+        const tx = await ensureApproval(wallet.provider, step.tokenAddress, wallet.address, itemType)
         if (tx) {
           updateStep(stepIndex, { status: 'confirming' })
           await tx.wait()
@@ -108,45 +110,33 @@ export default function Create() {
         updateStep(stepIndex, { status: 'done' })
       }
 
-      // Build order params
-      const salt = Date.now()
-      const takerAddr = taker.trim() || ZERO_ADDRESS
-      const THIRTY_DAYS = 30 * 24 * 60 * 60
-      const exp = expiration
-        ? Math.floor(new Date(expiration).getTime() / 1000)
-        : Math.floor(Date.now() / 1000) + THIRTY_DAYS
+      // Sign the Seaport order (no gas)
+      const signIndex = txSteps.length - 2
+      updateStep(signIndex, { status: 'signing' })
 
+      const takerAddr = taker.trim() || ZERO_ADDRESS
       const orderParams = {
         taker: takerAddr,
-        makerAssets: makerAssets.map((a) => ({
-          token: a.token,
-          tokenId: a.tokenId,
-          amount: a.assetType === 1 ? a.amount : '1',
-          assetType: a.assetType,
-        })),
-        takerAssets: takerAssets.map((a) => ({
-          token: a.token,
-          tokenId: a.tokenId,
-          amount: a.assetType === 1 ? a.amount : '1',
-          assetType: a.assetType,
-        })),
-        expiration: exp,
-        salt,
+        makerAssets,
+        takerAssets,
+        expiration,
+        makerAddress: wallet.address,
       }
 
-      const actionIndex = txSteps.length - 1
-      updateStep(actionIndex, { status: 'signing' })
-      const { tx, wait } = await createOrder(wallet.provider, chainId, orderParams)
-      updateStep(actionIndex, { status: 'confirming' })
+      // createOrder handles signing + registration
+      const { tx, wait } = await createOrder(wallet.provider, wallet.chainId, orderParams)
+      updateStep(signIndex, { status: 'done' })
+
+      // Register on-chain
+      const registerIndex = txSteps.length - 1
+      updateStep(registerIndex, { status: 'confirming' })
       await wait()
-      updateStep(actionIndex, { status: 'done' })
+      updateStep(registerIndex, { status: 'done' })
 
-      const swapPath = `/swap/${chainId}/${tx.hash}`
-
+      const swapPath = `/swap/${wallet.chainId}/${tx.hash}`
       navigate(swapPath)
     } catch (err) {
       console.error(err)
-      // Mark current signing/confirming step as failed
       const failedIndex = txSteps.findIndex((s) => s.status === 'signing' || s.status === 'confirming')
       if (failedIndex !== -1) {
         updateStep(failedIndex, { status: 'failed', error: err.reason || err.message || 'Failed' })

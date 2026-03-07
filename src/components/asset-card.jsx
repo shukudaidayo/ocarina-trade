@@ -2,15 +2,20 @@ import { useState, useEffect } from 'react'
 import { fetchMetadata } from '../lib/metadata'
 import { getVerificationStatus, getEtherscanUrl } from '../lib/verification'
 
-const ASSET_TYPE_LABELS = ['ERC-721', 'ERC-1155']
+// Seaport ItemType enum values
+const ITEM_TYPE_LABELS = { 1: 'ERC-20', 2: 'ERC-721', 3: 'ERC-1155' }
 const BADGE = { verified: '\u2705', unverified: '\u26A0\uFE0F', suspicious: '\uD83D\uDED1' }
 
 export default function AssetCard({ asset, chainId }) {
   const [metadata, setMetadata] = useState(null)
   const [loading, setLoading] = useState(true)
 
+  const itemType = asset.itemType ?? (asset.assetType === 'ERC1155' ? 3 : asset.assetType === 'ERC20' ? 1 : 2)
+  const isERC20 = itemType === 1
+  const isERC1155 = itemType === 3
+
   useEffect(() => {
-    if (!asset.token || !chainId) {
+    if (!asset.token || !chainId || isERC20) {
       setLoading(false)
       return
     }
@@ -19,7 +24,7 @@ export default function AssetCard({ asset, chainId }) {
     setLoading(true)
     setMetadata(null)
 
-    fetchMetadata(chainId, asset.token, asset.tokenId, asset.assetType)
+    fetchMetadata(chainId, asset.token, asset.tokenId, isERC1155 ? 1 : 0)
       .then((m) => {
         if (!cancelled) {
           setMetadata(m)
@@ -31,7 +36,7 @@ export default function AssetCard({ asset, chainId }) {
       })
 
     return () => { cancelled = true }
-  }, [asset.token, asset.tokenId, asset.assetType, chainId])
+  }, [asset.token, asset.tokenId, itemType, chainId, isERC20, isERC1155])
 
   const verification = getVerificationStatus(chainId, asset.token, metadata?.name)
   const etherscanUrl = getEtherscanUrl(chainId, asset.token)
@@ -39,7 +44,9 @@ export default function AssetCard({ asset, chainId }) {
   return (
     <div className={`asset-card asset-card-${verification.status}`}>
       <div className="asset-card-image">
-        {loading ? (
+        {isERC20 ? (
+          <div className="asset-card-placeholder">$</div>
+        ) : loading ? (
           <div className="asset-card-placeholder">...</div>
         ) : metadata?.image ? (
           <img src={metadata.image} alt={metadata.name || ''} loading="lazy" />
@@ -52,7 +59,7 @@ export default function AssetCard({ asset, chainId }) {
           <span className="verification-badge" title={verification.status}>
             {BADGE[verification.status]}
           </span>
-          {metadata?.name || `#${asset.tokenId}`}
+          {isERC20 ? `${asset.amount} tokens` : metadata?.name || `#${asset.tokenId}`}
         </span>
         <a
           className="asset-card-address"
@@ -64,11 +71,11 @@ export default function AssetCard({ asset, chainId }) {
           {asset.token}
         </a>
         <div className="asset-card-meta">
-          <span className="asset-type">{ASSET_TYPE_LABELS[asset.assetType]}</span>
-          {asset.assetType === 1 && (
+          <span className="asset-type">{ITEM_TYPE_LABELS[itemType] || 'Unknown'}</span>
+          {isERC1155 && (
             <span className="asset-detail">&times;{asset.amount}</span>
           )}
-          <span className="asset-card-tokenid">#{asset.tokenId}</span>
+          {!isERC20 && <span className="asset-card-tokenid">#{asset.tokenId}</span>}
         </div>
         {verification.status !== 'verified' && verification.message && (
           <p className={`verification-msg verification-${verification.status}`}>

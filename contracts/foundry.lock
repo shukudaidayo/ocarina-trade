@@ -1,0 +1,8 @@
+{
+  "lib/seaport-types": {
+    "tag": {
+      "name": "v1.6.3",
+      "rev": "b72493221ee1d2f2fb30ed94a3cc535a9028d09f"
+    }
+  }
+}

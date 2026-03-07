@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useOutletContext } from 'react-router'
-import { getOrderFromTx, getOrderStatus, fillOrder, cancelOrder, ensureApproval, ORDER_STATUS } from '../lib/contract'
+import { getOrderFromTx, getOrderStatus, fulfillOrder, cancelOrder, ensureApproval, deriveOrderStatus } from '../lib/contract'
 import AssetCard from '../components/asset-card'
 import AddressDisplay from '../components/address-display'
 import WarningBanner from '../components/warning-banner'
 import { truncateAddress } from '../lib/wallet'
 import TxChecklist, { buildSteps } from '../components/tx-checklist'
+import { ItemType } from '@opensea/seaport-js/lib/constants'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
@@ -13,11 +14,9 @@ export default function Swap() {
   const { chainId, txHash } = useParams()
   const wallet = useOutletContext()
 
-  const [order, setOrder] = useState(null)
-  const [contractAddress, setContractAddress] = useState(null)
+  const [orderData, setOrderData] = useState(null)
   const [loadError, setLoadError] = useState(null)
-  const [orderHash, setOrderHash] = useState(null)
-  const [onChainStatus, setOnChainStatus] = useState(null)
+  const [statusLabel, setStatusLabel] = useState(null)
   const [statusLoading, setStatusLoading] = useState(true)
   const [steps, setSteps] = useState([])
   const [error, setError] = useState(null)
@@ -31,13 +30,12 @@ export default function Swap() {
       try {
         const data = await getOrderFromTx(Number(chainId), txHash)
         if (cancelled) return
-        setOrder(data)
-        setContractAddress(data.contractAddress)
-        setOrderHash(data.orderHash)
+        setOrderData(data)
 
-        const status = await getOrderStatus(Number(chainId), data.contractAddress, data.orderHash)
+        const status = await getOrderStatus(Number(chainId), data.orderHash)
         if (!cancelled) {
-          setOnChainStatus(status)
+          const endTime = data.order.parameters.endTime
+          setStatusLabel(deriveOrderStatus(status, endTime))
           setStatusLoading(false)
         }
       } catch (err) {
@@ -53,11 +51,22 @@ export default function Swap() {
   }, [chainId, txHash])
 
   const handleFill = useCallback(async () => {
-    if (!wallet || !order) return
+    if (!wallet || !orderData) return
     setError(null)
     setSubmitting(true)
 
-    const txSteps = buildSteps(order.takerAssets, 'Accept Swap')
+    const params = orderData.order.parameters
+    // Build taker assets from consideration items
+    const takerAssets = params.consideration.map((c) => ({
+      token: c.token,
+      tokenId: c.identifierOrCriteria,
+      amount: c.startAmount,
+      assetType: Number(c.itemType) === ItemType.ERC20 ? 'ERC20' :
+                 Number(c.itemType) === ItemType.ERC1155 ? 'ERC1155' : 'ERC721',
+      itemType: Number(c.itemType),
+    }))
+
+    const txSteps = buildSteps(takerAssets, 'Accept Swap')
     setSteps(txSteps)
 
     function updateStep(index, update) {
@@ -72,7 +81,8 @@ export default function Swap() {
         const stepIndex = txSteps.indexOf(step)
         updateStep(stepIndex, { status: 'signing' })
 
-        const tx = await ensureApproval(wallet.provider, wallet.chainId, step.tokenAddress, wallet.address)
+        const asset = takerAssets.find((a) => a.token.toLowerCase() === step.tokenAddress.toLowerCase())
+        const tx = await ensureApproval(wallet.provider, step.tokenAddress, wallet.address, asset?.itemType ?? ItemType.ERC721)
         if (tx) {
           updateStep(stepIndex, { status: 'confirming' })
           await tx.wait()
@@ -82,12 +92,12 @@ export default function Swap() {
 
       const actionIndex = txSteps.length - 1
       updateStep(actionIndex, { status: 'signing' })
-      const { wait } = await fillOrder(wallet.provider, wallet.chainId, order)
+      const { wait } = await fulfillOrder(wallet.provider, orderData.order)
       updateStep(actionIndex, { status: 'confirming' })
       await wait()
       updateStep(actionIndex, { status: 'done' })
 
-      setOnChainStatus(2) // FILLED
+      setStatusLabel('filled')
     } catch (err) {
       console.error(err)
       const failedIndex = txSteps.findIndex((s) => s.status === 'signing' || s.status === 'confirming')
@@ -98,10 +108,10 @@ export default function Swap() {
     } finally {
       setSubmitting(false)
     }
-  }, [wallet, order])
+  }, [wallet, orderData])
 
   const handleCancel = useCallback(async () => {
-    if (!wallet || !orderHash) return
+    if (!wallet || !orderData) return
     setError(null)
     setSubmitting(true)
 
@@ -115,12 +125,12 @@ export default function Swap() {
 
     try {
       updateStep(0, { status: 'signing' })
-      const { wait } = await cancelOrder(wallet.provider, wallet.chainId, orderHash)
+      const { wait } = await cancelOrder(wallet.provider, orderData.order.parameters)
       updateStep(0, { status: 'confirming' })
       await wait()
       updateStep(0, { status: 'done' })
 
-      setOnChainStatus(3) // CANCELLED
+      setStatusLabel('cancelled')
     } catch (err) {
       console.error(err)
       updateStep(0, { status: 'failed', error: err.reason || err.message || 'Failed' })
@@ -128,7 +138,7 @@ export default function Swap() {
     } finally {
       setSubmitting(false)
     }
-  }, [wallet, orderHash])
+  }, [wallet, orderData])
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(window.location.href)
@@ -145,17 +155,33 @@ export default function Swap() {
     )
   }
 
-  if (!order) return <div className="page swap"><p className="text-muted">Loading order...</p></div>
+  if (!orderData) return <div className="page swap"><p className="text-muted">Loading order...</p></div>
 
-  const isExpired = order.expiration > 0 && order.expiration < Date.now() / 1000
-  const isMaker = wallet && wallet.address.toLowerCase() === order.maker.toLowerCase()
+  const params = orderData.order.parameters
+  const maker = params.offerer
+  const taker = orderData.taker
+  const isExpired = statusLabel === 'expired'
+  const isMaker = wallet && wallet.address.toLowerCase() === maker.toLowerCase()
   const isTaker = wallet && (
-    order.taker === ZERO_ADDRESS ||
-    wallet.address.toLowerCase() === order.taker.toLowerCase()
+    taker === ZERO_ADDRESS ||
+    wallet.address.toLowerCase() === taker.toLowerCase()
   )
-  const isOpen = onChainStatus === 1
-  const statusLabel = onChainStatus !== null ? ORDER_STATUS[onChainStatus] : null
+  const isOpen = statusLabel === 'open'
   const wrongChain = wallet && wallet.chainId !== Number(chainId)
+
+  // Parse offer/consideration for display
+  const offerAssets = params.offer.map((o) => ({
+    token: o.token,
+    tokenId: o.identifierOrCriteria,
+    amount: o.startAmount,
+    itemType: Number(o.itemType),
+  }))
+  const considerationAssets = params.consideration.map((c) => ({
+    token: c.token,
+    tokenId: c.identifierOrCriteria,
+    amount: c.startAmount,
+    itemType: Number(c.itemType),
+  }))
 
   return (
     <div className="page swap">
@@ -167,11 +193,10 @@ export default function Swap() {
         {statusLoading ? (
           <span className="status-loading">Loading status...</span>
         ) : (
-          <span className={`status-badge status-${statusLabel?.toLowerCase()}`}>
+          <span className={`status-badge status-${statusLabel}`}>
             {statusLabel}
           </span>
         )}
-        {isExpired && isOpen && <span className="status-badge status-expired">Expired</span>}
         <button className="btn btn-secondary btn-sm" onClick={handleCopy}>
           {copied ? 'Copied!' : 'Copy Link'}
         </button>
@@ -181,42 +206,38 @@ export default function Swap() {
         <div className="swap-party">
           <h3>Maker sends</h3>
           <p className="party-address">
-            <AddressDisplay address={order.maker} chainId={Number(chainId)} showFull />
+            <AddressDisplay address={maker} chainId={Number(chainId)} showFull />
             {isMaker && <span className="you-badge">you</span>}
           </p>
-          <AssetList assets={order.makerAssets} chainId={chainId} />
+          <AssetList assets={offerAssets} chainId={chainId} />
         </div>
         <div className="swap-arrow">&#8644;</div>
         <div className="swap-party">
           <h3>Taker sends</h3>
           <p className="party-address">
-            {order.taker === ZERO_ADDRESS ? (
+            {taker === ZERO_ADDRESS ? (
               <em>Open to anyone</em>
             ) : (
               <>
-                <AddressDisplay address={order.taker} chainId={Number(chainId)} showFull />
-                {isTaker && order.taker !== ZERO_ADDRESS && <span className="you-badge">you</span>}
+                <AddressDisplay address={taker} chainId={Number(chainId)} showFull />
+                {isTaker && taker !== ZERO_ADDRESS && <span className="you-badge">you</span>}
               </>
             )}
           </p>
-          <AssetList assets={order.takerAssets} chainId={chainId} />
+          <AssetList assets={considerationAssets} chainId={chainId} />
         </div>
       </div>
 
       <div className="swap-meta">
-        {order.expiration > 0 && (
+        {params.endTime && Number(params.endTime) > 0 && (
           <p>
             <span className="meta-label">Expires:</span>{' '}
-            {new Date(order.expiration * 1000).toLocaleString()}
+            {new Date(Number(params.endTime) * 1000).toLocaleString()}
             {isExpired && ' (expired)'}
           </p>
         )}
         <p>
           <span className="meta-label">Chain:</span> {chainId}
-        </p>
-        <p>
-          <span className="meta-label">Contract:</span>{' '}
-          <code>{contractAddress}</code>
         </p>
       </div>
 

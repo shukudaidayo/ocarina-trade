@@ -1,16 +1,16 @@
 import { useState, useEffect } from 'react'
 import { Link, useOutletContext } from 'react-router'
-import { queryOrderEvents } from '../lib/contract'
+import { queryOrderEvents, getOrderStatus, deriveOrderStatus } from '../lib/contract'
 import { truncateAddress } from '../lib/wallet'
 import AddressDisplay from '../components/address-display'
-import { CONTRACT_ADDRESSES } from '../lib/constants'
+import { ZONE_ADDRESSES } from '../lib/constants'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const PAGE_SIZE = 20
 
-// Use the first chain that has a deployed contract
+// Use the first chain that has a deployed zone contract
 const DEFAULT_CHAIN_ID = Number(
-  Object.entries(CONTRACT_ADDRESSES).find(([, addr]) => addr !== null)?.[0] ?? 0
+  Object.entries(ZONE_ADDRESSES).find(([, addr]) => addr !== null)?.[0] ?? 0
 )
 
 export default function Offers() {
@@ -22,33 +22,37 @@ export default function Offers() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   useEffect(() => {
-    if (!DEFAULT_CHAIN_ID || !CONTRACT_ADDRESSES[DEFAULT_CHAIN_ID]) {
+    if (!DEFAULT_CHAIN_ID || !ZONE_ADDRESSES[DEFAULT_CHAIN_ID]) {
       setLoading(false)
-      setError('No contract deployed yet.')
+      setError('No OTCZone deployed yet.')
       return
     }
 
     let cancelled = false
     async function load() {
       try {
-        const { created, filledHashes, cancelledHashes } = await queryOrderEvents(
+        const registrations = await queryOrderEvents(
           DEFAULT_CHAIN_ID,
-          CONTRACT_ADDRESSES[DEFAULT_CHAIN_ID],
+          ZONE_ADDRESSES[DEFAULT_CHAIN_ID],
         )
 
         if (cancelled) return
 
-        const enriched = created.map((order) => {
-          let status = 'open'
-          if (filledHashes.has(order.orderHash)) status = 'filled'
-          else if (cancelledHashes.has(order.orderHash)) status = 'cancelled'
+        // Fetch Seaport status for each order
+        const enriched = await Promise.all(
+          registrations.map(async (reg) => {
+            try {
+              const seaportStatus = await getOrderStatus(DEFAULT_CHAIN_ID, reg.orderHash)
+              const endTime = reg.order?.parameters?.endTime
+              const status = deriveOrderStatus(seaportStatus, endTime)
+              return { ...reg, status }
+            } catch {
+              return { ...reg, status: 'unknown' }
+            }
+          })
+        )
 
-          if (status === 'open' && order.expiration > 0 && order.expiration < Date.now() / 1000) {
-            status = 'expired'
-          }
-
-          return { ...order, status }
-        })
+        if (cancelled) return
 
         // Most recent first
         enriched.reverse()
@@ -148,13 +152,14 @@ export default function Offers() {
 
 function OfferCard({ order, chainId }) {
   const swapUrl = `/swap/${chainId}/${order.transactionHash}`
+  const params = order.order?.parameters
 
   return (
     <Link to={swapUrl} className="offer-card">
       <div className="offer-card-side">
         <span className="offer-label">Maker</span>
         <AddressDisplay address={order.maker} chainId={chainId} />
-        <AssetSummary assets={order.makerAssets} />
+        {params && <AssetSummary items={params.offer} />}
       </div>
       <div className="offer-card-arrow">&#8644;</div>
       <div className="offer-card-side">
@@ -164,7 +169,7 @@ function OfferCard({ order, chainId }) {
         ) : (
           <AddressDisplay address={order.taker} chainId={chainId} />
         )}
-        <AssetSummary assets={order.takerAssets} />
+        {params && <AssetSummary items={params.consideration} />}
       </div>
       <div className="offer-card-meta">
         <span className={`status-badge status-${order.status}`}>
@@ -175,13 +180,14 @@ function OfferCard({ order, chainId }) {
   )
 }
 
-function AssetSummary({ assets }) {
+function AssetSummary({ items }) {
   return (
     <div className="offer-assets">
-      {assets.map((a, i) => (
+      {items.map((item, i) => (
         <span key={i} className="offer-asset-tag">
-          {truncateAddress(a.token)} #{a.tokenId}
-          {a.assetType === 1 && ` x${a.amount}`}
+          {truncateAddress(item.token)}
+          {item.identifierOrCriteria !== '0' && ` #${item.identifierOrCriteria}`}
+          {Number(item.startAmount) > 1 && ` x${item.startAmount}`}
         </span>
       ))}
     </div>

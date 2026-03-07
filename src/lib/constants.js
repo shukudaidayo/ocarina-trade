@@ -5,196 +5,77 @@ export const CHAINS = {
   11155111: { name: 'Sepolia', rpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com' },
 }
 
-export const CONTRACT_ADDRESSES = {
-  1: null,
-  11155111: '0x4f105ba0764c6f73502Df969a357467FE3361acb',
+// Seaport 1.6 canonical address (same on all chains)
+export const SEAPORT_ADDRESS = '0x0000000000000068F116a894984e2DB1123eB395'
+
+// OTCZone contract addresses per chain
+export const ZONE_ADDRESSES = {
+  1: null,        // mainnet — not deployed yet
+  11155111: null,  // sepolia — not deployed yet
 }
 
-// Block number at or before contract deployment — used as fromBlock for event queries
-export const CONTRACT_DEPLOY_BLOCKS = {
+// Block number at or before OTCZone deployment — used as fromBlock for event queries
+export const ZONE_DEPLOY_BLOCKS = {
   1: 0,
-  11155111: 10390000,
+  11155111: 0,
 }
 
-export const CONTRACT_ABI = [
-  {
-    type: 'constructor',
-    inputs: [],
-    stateMutability: 'nonpayable',
+// Whitelisted ERC-20 tokens per chain
+export const WHITELISTED_ERC20 = {
+  1: {
+    '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': { symbol: 'WETH', decimals: 18 },
+    '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': { symbol: 'USDC', decimals: 6 },
+    '0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c': { symbol: 'EURC', decimals: 6 },
+    '0xdC035D45d973E3EC169d2276DDab16f1e407384F': { symbol: 'USDS', decimals: 18 },
   },
+  11155111: {
+    // Sepolia test tokens — update with actual addresses when testing
+  },
+}
+
+// OTCZone ABI — only the parts we call from the frontend
+export const ZONE_ABI = [
   {
     type: 'function',
-    name: 'cancelOrder',
-    inputs: [{ name: 'orderHash', type: 'bytes32', internalType: 'bytes32' }],
-    outputs: [],
-    stateMutability: 'nonpayable',
-  },
-  {
-    type: 'function',
-    name: 'createOrder',
+    name: 'registerOrder',
     inputs: [
-      { name: 'taker', type: 'address', internalType: 'address' },
+      { name: 'orderHash', type: 'bytes32' },
+      { name: 'taker', type: 'address' },
       {
-        name: 'makerAssets',
+        name: 'offer',
         type: 'tuple[]',
-        internalType: 'struct OTCSwap.Asset[]',
         components: [
-          { name: 'token', type: 'address', internalType: 'address' },
-          { name: 'tokenId', type: 'uint256', internalType: 'uint256' },
-          { name: 'amount', type: 'uint256', internalType: 'uint256' },
-          { name: 'assetType', type: 'uint8', internalType: 'enum OTCSwap.AssetType' },
+          { name: 'itemType', type: 'uint8' },
+          { name: 'token', type: 'address' },
+          { name: 'identifier', type: 'uint256' },
+          { name: 'amount', type: 'uint256' },
         ],
       },
       {
-        name: 'takerAssets',
+        name: 'consideration',
         type: 'tuple[]',
-        internalType: 'struct OTCSwap.Asset[]',
         components: [
-          { name: 'token', type: 'address', internalType: 'address' },
-          { name: 'tokenId', type: 'uint256', internalType: 'uint256' },
-          { name: 'amount', type: 'uint256', internalType: 'uint256' },
-          { name: 'assetType', type: 'uint8', internalType: 'enum OTCSwap.AssetType' },
+          { name: 'itemType', type: 'uint8' },
+          { name: 'token', type: 'address' },
+          { name: 'identifier', type: 'uint256' },
+          { name: 'amount', type: 'uint256' },
+          { name: 'recipient', type: 'address' },
         ],
       },
-      { name: 'expiration', type: 'uint256', internalType: 'uint256' },
-      { name: 'salt', type: 'uint256', internalType: 'uint256' },
-    ],
-    outputs: [{ name: 'orderHash', type: 'bytes32', internalType: 'bytes32' }],
-    stateMutability: 'nonpayable',
-  },
-  {
-    type: 'function',
-    name: 'fillOrder',
-    inputs: [
-      { name: 'maker', type: 'address', internalType: 'address' },
-      { name: 'taker', type: 'address', internalType: 'address' },
-      {
-        name: 'makerAssets',
-        type: 'tuple[]',
-        internalType: 'struct OTCSwap.Asset[]',
-        components: [
-          { name: 'token', type: 'address', internalType: 'address' },
-          { name: 'tokenId', type: 'uint256', internalType: 'uint256' },
-          { name: 'amount', type: 'uint256', internalType: 'uint256' },
-          { name: 'assetType', type: 'uint8', internalType: 'enum OTCSwap.AssetType' },
-        ],
-      },
-      {
-        name: 'takerAssets',
-        type: 'tuple[]',
-        internalType: 'struct OTCSwap.Asset[]',
-        components: [
-          { name: 'token', type: 'address', internalType: 'address' },
-          { name: 'tokenId', type: 'uint256', internalType: 'uint256' },
-          { name: 'amount', type: 'uint256', internalType: 'uint256' },
-          { name: 'assetType', type: 'uint8', internalType: 'enum OTCSwap.AssetType' },
-        ],
-      },
-      { name: 'expiration', type: 'uint256', internalType: 'uint256' },
-      { name: 'salt', type: 'uint256', internalType: 'uint256' },
+      { name: 'orderURI', type: 'string' },
     ],
     outputs: [],
     stateMutability: 'nonpayable',
   },
   {
-    type: 'function',
-    name: 'kill',
-    inputs: [],
-    outputs: [],
-    stateMutability: 'nonpayable',
-  },
-  {
-    type: 'function',
-    name: 'killed',
-    inputs: [],
-    outputs: [{ name: '', type: 'bool', internalType: 'bool' }],
-    stateMutability: 'view',
-  },
-  {
-    type: 'function',
-    name: 'orderMakers',
-    inputs: [{ name: '', type: 'bytes32', internalType: 'bytes32' }],
-    outputs: [{ name: '', type: 'address', internalType: 'address' }],
-    stateMutability: 'view',
-  },
-  {
-    type: 'function',
-    name: 'orders',
-    inputs: [{ name: '', type: 'bytes32', internalType: 'bytes32' }],
-    outputs: [{ name: '', type: 'uint8', internalType: 'enum OTCSwap.OrderStatus' }],
-    stateMutability: 'view',
-  },
-  {
-    type: 'function',
-    name: 'owner',
-    inputs: [],
-    outputs: [{ name: '', type: 'address', internalType: 'address' }],
-    stateMutability: 'view',
-  },
-  {
     type: 'event',
-    name: 'Killed',
-    inputs: [],
-    anonymous: false,
-  },
-  {
-    type: 'event',
-    name: 'OrderCancelled',
+    name: 'OrderRegistered',
     inputs: [
-      { name: 'orderHash', type: 'bytes32', indexed: true, internalType: 'bytes32' },
-      { name: 'maker', type: 'address', indexed: true, internalType: 'address' },
+      { name: 'orderHash', type: 'bytes32', indexed: true },
+      { name: 'maker', type: 'address', indexed: true },
+      { name: 'taker', type: 'address', indexed: true },
+      { name: 'orderURI', type: 'string', indexed: false },
     ],
     anonymous: false,
-  },
-  {
-    type: 'event',
-    name: 'OrderCreated',
-    inputs: [
-      { name: 'orderHash', type: 'bytes32', indexed: true, internalType: 'bytes32' },
-      { name: 'maker', type: 'address', indexed: true, internalType: 'address' },
-      { name: 'taker', type: 'address', indexed: true, internalType: 'address' },
-      {
-        name: 'makerAssets',
-        type: 'tuple[]',
-        indexed: false,
-        internalType: 'struct OTCSwap.Asset[]',
-        components: [
-          { name: 'token', type: 'address', internalType: 'address' },
-          { name: 'tokenId', type: 'uint256', internalType: 'uint256' },
-          { name: 'amount', type: 'uint256', internalType: 'uint256' },
-          { name: 'assetType', type: 'uint8', internalType: 'enum OTCSwap.AssetType' },
-        ],
-      },
-      {
-        name: 'takerAssets',
-        type: 'tuple[]',
-        indexed: false,
-        internalType: 'struct OTCSwap.Asset[]',
-        components: [
-          { name: 'token', type: 'address', internalType: 'address' },
-          { name: 'tokenId', type: 'uint256', internalType: 'uint256' },
-          { name: 'amount', type: 'uint256', internalType: 'uint256' },
-          { name: 'assetType', type: 'uint8', internalType: 'enum OTCSwap.AssetType' },
-        ],
-      },
-      { name: 'expiration', type: 'uint256', indexed: false, internalType: 'uint256' },
-      { name: 'salt', type: 'uint256', indexed: false, internalType: 'uint256' },
-    ],
-    anonymous: false,
-  },
-  {
-    type: 'event',
-    name: 'OrderFilled',
-    inputs: [
-      { name: 'orderHash', type: 'bytes32', indexed: true, internalType: 'bytes32' },
-      { name: 'maker', type: 'address', indexed: true, internalType: 'address' },
-      { name: 'taker', type: 'address', indexed: true, internalType: 'address' },
-    ],
-    anonymous: false,
-  },
-  {
-    type: 'error',
-    name: 'ReentrancyGuardReentrantCall',
-    inputs: [],
   },
 ]

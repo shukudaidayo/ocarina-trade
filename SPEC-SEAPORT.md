@@ -28,7 +28,7 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 ## 2. V1 Scope
 
 - **Chain**: Ethereum Mainnet (Sepolia for testing)
-- **Token types**: ERC-721, ERC-1155, and ERC-20 (WETH/USDC only)
+- **Token types**: ERC-721, ERC-1155, ERC-20 (whitelisted only), and native ETH
 - **Swap structure**: Multi-asset <-> multi-asset (each side can have 1+ items)
 - **Counterparty**: Optionally restricted to a specific address, or open to anyone
 - **Expiration**: Required (default 30 days, configurable in UI)
@@ -101,84 +101,9 @@ For a simple NFT-for-NFT swap:
 
 The **OTCZone** is a minimal custom contract deployed once per chain. It combines three responsibilities: taker restriction, ERC-20 whitelist enforcement, and order registration.
 
-```solidity
-contract OTCZone {
-    // Seaport item types
-    uint8 constant ERC20 = 1;
+Implementation: `contracts/src/OTCZone.sol`
 
-    // Whitelisted ERC-20 addresses (set at deployment, immutable thereafter)
-    mapping(address => bool) public whitelistedERC20;
-
-    error Unauthorized();
-    error TokenNotWhitelisted(address token);
-
-    event OrderRegistered(
-        bytes32 indexed orderHash,
-        address indexed maker,
-        address indexed taker,  // address(0) if open to anyone
-        string orderURI          // The full swap URL or encoded signed order
-    );
-
-    constructor(address[] memory _tokens) {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            whitelistedERC20[_tokens[i]] = true;
-        }
-    }
-
-    /// @notice Register a signed order for public discovery.
-    ///         Validates that any ERC-20 items are whitelisted.
-    function registerOrder(
-        bytes32 orderHash,
-        address taker,
-        SpentItem[] calldata offer,
-        ReceivedItem[] calldata consideration,
-        string calldata orderURI
-    ) external {
-        // Validate ERC-20 whitelist at registration time
-        for (uint256 i = 0; i < offer.length; i++) {
-            if (offer[i].itemType == ERC20) _checkWhitelist(offer[i].token);
-        }
-        for (uint256 i = 0; i < consideration.length; i++) {
-            if (consideration[i].itemType == ERC20) _checkWhitelist(consideration[i].token);
-        }
-        emit OrderRegistered(orderHash, msg.sender, taker, orderURI);
-    }
-
-    /// @notice Seaport zone hook — validates taker restriction and ERC-20 whitelist.
-    function validateOrder(ZoneParameters calldata zoneParameters)
-        external view returns (bytes4)
-    {
-        // Check taker restriction
-        address allowedTaker = address(bytes20(zoneParameters.zoneHash));
-        if (allowedTaker != address(0) &&
-            zoneParameters.fulfiller != allowedTaker) {
-            revert Unauthorized();
-        }
-
-        // Check ERC-20 whitelist on offer items
-        for (uint256 i = 0; i < zoneParameters.offer.length; i++) {
-            if (zoneParameters.offer[i].itemType == ERC20) {
-                _checkWhitelist(zoneParameters.offer[i].token);
-            }
-        }
-
-        // Check ERC-20 whitelist on consideration items
-        for (uint256 i = 0; i < zoneParameters.consideration.length; i++) {
-            if (zoneParameters.consideration[i].itemType == ERC20) {
-                _checkWhitelist(zoneParameters.consideration[i].token);
-            }
-        }
-
-        return this.validateOrder.selector;
-    }
-
-    function _checkWhitelist(address token) internal view {
-        if (!whitelistedERC20[token]) revert TokenNotWhitelisted(token);
-    }
-}
-```
-
-This is the only custom contract in the stack. It has no owner, no mutable state, no admin functions, and no access to user funds. It serves three purposes:
+The contract implements Seaport 1.6's `ZoneInterface` (from `seaport-types`). It has no owner, no mutable state, no admin functions, and no access to user funds. It serves three purposes:
 1. **Taker validation**: Checks that the fulfiller matches the allowed taker in `zoneHash`.
 2. **ERC-20 whitelist**: Rejects orders containing non-whitelisted ERC-20 tokens, both at registration and at fulfillment. Whitelist is set at deployment (immutable — no admin can modify it). Planned tokens: WETH, USDC, EURC, USDS — exact list TBD.
 3. **Order registry**: Makers call `registerOrder` after signing to publish their order for discovery. The offers page queries `OrderRegistered` events.
@@ -189,8 +114,6 @@ ERC-20 enforcement happens at three layers:
 - **Fulfillment**: `validateOrder` reverts if Seaport tries to settle an order with a non-whitelisted ERC-20.
 
 The `orderURI` field stores the base64-encoded signed order, so the frontend can reconstruct the swap page from the event alone.
-
-**Open question:** Validate during implementation that `zoneParameters.fulfiller` is reliably set to `msg.sender` by Seaport 1.6, and that `zoneHash` is passed through correctly. The zone interface may also require `authorizeOrder` — need to confirm the full interface.
 
 **Note:** Seaport also allows the offerer to cancel by incrementing their counter (bulk cancel) or cancelling specific orders on-chain.
 
@@ -474,6 +397,6 @@ The only custom contract is the OTCZone (~30 lines), deployed once per chain. Fo
 
 2. ~~**Offers page without events**~~: **Resolved** — the OTCZone contract emits `OrderRegistered` events, providing an on-chain index of published orders. The offers page queries these events and cross-references with Seaport for order status.
 
-3. **OTCZone implementation**: Confirm the exact Seaport 1.6 zone interface (`validateOrder`, `authorizeOrder`, etc.), verify that `zoneParameters.fulfiller` reliably equals `msg.sender`, and test that `zoneHash` passes through correctly. The contract is trivial but the interface conformance needs to be exact.
+3. ~~**OTCZone implementation**~~: **Resolved** — implemented and tested. The Seaport 1.6 `ZoneInterface` requires `authorizeOrder`, `validateOrder`, `getSeaportMetadata`, and `supportsInterface`. Our contract implements all four. See `contracts/src/OTCZone.sol` and `contracts/test/OTCZone.t.sol`.
 
 4. ~~**Maker approvals timing**~~: **Resolved** — prompt approvals at order creation. The maker pays gas for approvals, but the order is immediately fillable. This avoids confusion where a taker opens a link and can't fill because the maker forgot to approve.
