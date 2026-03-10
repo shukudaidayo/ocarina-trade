@@ -4,5 +4,11 @@
       "name": "v1.6.3",
       "rev": "b72493221ee1d2f2fb30ed94a3cc535a9028d09f"
     }
+  },
+  "lib/solady": {
+    "tag": {
+      "name": "v0.1.26",
+      "rev": "acd959aa4bd04720d640bf4e6a5c71037510cc4b"
+    }
   }
 }

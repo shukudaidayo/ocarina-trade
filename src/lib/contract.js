@@ -161,7 +161,7 @@ export async function createOrder(rawProvider, chainId, {
 
   const takerAddress = taker && taker !== ZERO_ADDRESS ? taker : ZERO_ADDRESS
 
-  const tx = await zone.registerOrder(orderHash, takerAddress, spentItems, receivedItems, orderURI)
+  const tx = await zone.registerOrder(orderHash, makerAddress, takerAddress, spentItems, receivedItems, order.signature, orderURI)
 
   return {
     order,

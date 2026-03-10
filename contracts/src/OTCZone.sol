@@ -4,13 +4,21 @@ pragma solidity 0.8.28;
 import {ZoneInterface} from "seaport-types/interfaces/ZoneInterface.sol";
 import {ZoneParameters, SpentItem, ReceivedItem, Schema} from "seaport-types/lib/ConsiderationStructs.sol";
 import {ItemType} from "seaport-types/lib/ConsiderationEnums.sol";
+import {SignatureCheckerLib} from "solady/utils/SignatureCheckerLib.sol";
+
+interface ISeaport {
+    function information() external view returns (string memory version, bytes32 domainSeparator, address conduitController);
+}
 
 contract OTCZone is ZoneInterface {
     address[] private whitelistedTokens;
     mapping(address => bool) public whitelistedERC20;
+    address public immutable seaport;
+    bytes32 private immutable _domainSeparator;
 
     error Unauthorized();
     error TokenNotWhitelisted(address token);
+    error InvalidSignature();
 
     event OrderRegistered(
         bytes32 indexed orderHash,
@@ -19,11 +27,13 @@ contract OTCZone is ZoneInterface {
         string orderURI
     );
 
-    constructor(address[] memory _tokens) {
+    constructor(address[] memory _tokens, address _seaport) {
         whitelistedTokens = _tokens;
         for (uint256 i = 0; i < _tokens.length; i++) {
             whitelistedERC20[_tokens[i]] = true;
         }
+        seaport = _seaport;
+        (, _domainSeparator,) = ISeaport(_seaport).information();
     }
 
     /// @notice Returns the full list of whitelisted ERC-20 addresses.
@@ -32,20 +42,33 @@ contract OTCZone is ZoneInterface {
     }
 
     /// @notice Register a signed order for public discovery.
+    /// @param orderHash The Seaport order hash.
+    /// @param maker The address that signed the order (verified via signature).
+    /// @param taker The restricted taker, or address(0) for open orders.
+    /// @param offer The offer items (for whitelist checks).
+    /// @param consideration The consideration items (for whitelist checks).
+    /// @param signature The maker's EIP-712 signature over the Seaport order.
+    /// @param orderURI The full signed order encoded for the frontend.
     function registerOrder(
         bytes32 orderHash,
+        address maker,
         address taker,
         SpentItem[] calldata offer,
         ReceivedItem[] calldata consideration,
+        bytes calldata signature,
         string calldata orderURI
     ) external {
+        // Verify the maker signed this order (supports EOAs and EIP-1271 contract wallets)
+        bytes32 digest = keccak256(abi.encodePacked(bytes2(0x1901), _domainSeparator, orderHash));
+        if (!SignatureCheckerLib.isValidSignatureNow(maker, digest, signature)) revert InvalidSignature();
+
         for (uint256 i = 0; i < offer.length; i++) {
             if (offer[i].itemType == ItemType.ERC20) _checkWhitelist(offer[i].token);
         }
         for (uint256 i = 0; i < consideration.length; i++) {
             if (consideration[i].itemType == ItemType.ERC20) _checkWhitelist(consideration[i].token);
         }
-        emit OrderRegistered(orderHash, msg.sender, taker, orderURI);
+        emit OrderRegistered(orderHash, maker, taker, orderURI);
     }
 
     /// @notice Called by Seaport before token transfers. No pre-flight checks needed.

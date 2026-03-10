@@ -10,7 +10,7 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 
 ### Why Seaport
 
-- **Near-zero custom contract surface.** The only custom contract (OTCZone, ~30 lines) handles taker restriction, ERC-20 whitelisting, and order discovery — it never touches user funds. Seaport handles all asset transfers.
+- **Near-zero custom contract surface.** The only custom contract (OTCZone, ~150 lines) handles taker restriction, ERC-20 whitelisting, signature-verified order discovery — it never touches user funds. Seaport handles all asset transfers.
 - **Battle-tested security.** Multiple professional audits, billions in volume, years of production use.
 - **No liability.** We are building a frontend, not a protocol. The smart contract layer is OpenSea's responsibility.
 - **Free order creation.** Seaport uses off-chain signatures — creating an offer costs zero gas.
@@ -32,6 +32,7 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 - **Swap structure**: Multi-asset <-> multi-asset (each side can have 1+ items)
 - **Counterparty**: Optionally restricted to a specific address, or open to anyone
 - **Expiration**: Required (default 30 days, configurable in UI)
+- **Wallets**: EOAs and single-owner smart wallets (EIP-1271). Multisigs (e.g., Safe) are not supported due to the asynchronous multi-signer signing flow.
 - **Cross-chain**: Out of scope (Seaport is per-chain)
 
 ---
@@ -99,14 +100,16 @@ For a simple NFT-for-NFT swap:
 
 **Note:** All orders use `FULL_RESTRICTED` with the OTCZone so that ERC-20 whitelist enforcement always applies. Open-to-anyone orders simply set `zoneHash` to `bytes32(0)`.
 
-The **OTCZone** is a minimal custom contract deployed once per chain. It combines three responsibilities: taker restriction, ERC-20 whitelist enforcement, and order registration.
+The **OTCZone** is a minimal custom contract (~150 lines) deployed once per chain. It combines three responsibilities: taker restriction, ERC-20 whitelist enforcement, and order registration.
 
 Implementation: `contracts/src/OTCZone.sol`
 
-The contract implements Seaport 1.6's `ZoneInterface` (from `seaport-types`). It has no owner, no mutable state, no admin functions, and no access to user funds. It serves three purposes:
+The contract implements Seaport 1.6's `ZoneInterface` (from `seaport-types`). It has no owner, no mutable state after construction, no admin functions, and no access to user funds. The constructor takes a list of whitelisted ERC-20 addresses and the Seaport contract address (used to fetch the EIP-712 domain separator for signature verification).
+
+It serves three purposes:
 1. **Taker validation**: Checks that the fulfiller matches the allowed taker in `zoneHash`.
 2. **ERC-20 whitelist**: Rejects orders containing non-whitelisted ERC-20 tokens, both at registration and at fulfillment. Whitelist is set at deployment (immutable — no admin can modify it). Mainnet whitelist: WETH, USDC, USDT, USDS, EURC.
-3. **Order registry**: Makers call `registerOrder` after signing to publish their order for discovery. The offers page queries `OrderRegistered` events.
+3. **Order registry**: `registerOrder` publishes signed orders for discovery. It verifies the maker's EIP-712 signature on-chain using Solady's `SignatureCheckerLib`, which supports EOA signatures (both standard 65-byte and EIP-2098 compact 64-byte) and EIP-1271 contract wallet signatures. The indexed `maker` in the `OrderRegistered` event is cryptographically guaranteed to be the actual order signer — regardless of who submits the transaction. This allows proxy wallets, gas sponsors, and smart wallets to register orders on behalf of makers.
 
 ERC-20 enforcement happens at three layers:
 - **Frontend**: The Create page only offers whitelisted ERC-20s (WETH, USDC, USDT, USDS, EURC).
@@ -382,12 +385,16 @@ Zero accounts, API keys, or proprietary services required:
 - **react-router** (v7): Hash-based routing
 - **@reown/appkit** + **@reown/appkit-adapter-ethers**: Wallet connection
 
+### Contract
+- **solady**: Signature verification (`SignatureCheckerLib` — EOA + EIP-1271 + EIP-2098 compact)
+- **seaport-types**: Seaport interface types (`ZoneInterface`, structs, enums)
+
 ### Dev
 - **vite**: Build tool
 - **@vitejs/plugin-react**: JSX transform
 - **foundry** (forge): OTCZone contract development and testing
 
-The only custom contract is the OTCZone (~30 lines), deployed once per chain. Foundry is needed only for this contract.
+The only custom contract is the OTCZone (~150 lines), deployed once per chain. Foundry is needed only for this contract.
 
 ---
 

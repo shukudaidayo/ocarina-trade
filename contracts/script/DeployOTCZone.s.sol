@@ -4,6 +4,9 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 import {OTCZone} from "../src/OTCZone.sol";
 
+// Seaport 1.6 canonical address (same on all chains)
+address constant SEAPORT = 0x0000000000000068F116a894984e2DB1123eB395;
+
 contract DeployOTCZoneSepolia is Script {
     function run() external {
         address[] memory tokens = new address[](2);
@@ -11,7 +14,7 @@ contract DeployOTCZoneSepolia is Script {
         tokens[1] = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238; // USDC
 
         vm.startBroadcast();
-        OTCZone zone = new OTCZone(tokens);
+        OTCZone zone = new OTCZone(tokens, SEAPORT);
         vm.stopBroadcast();
 
         console.log("OTCZone deployed at:", address(zone));
@@ -28,7 +31,7 @@ contract DeployOTCZoneMainnet is Script {
         tokens[4] = 0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c; // EURC
 
         vm.startBroadcast();
-        OTCZone zone = new OTCZone(tokens);
+        OTCZone zone = new OTCZone(tokens, SEAPORT);
         vm.stopBroadcast();
 
         console.log("OTCZone deployed at:", address(zone));

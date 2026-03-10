@@ -21,8 +21,9 @@ sequenceDiagram
     F->>F: Compute orderHash (local)
     F->>F: Encode signed order → base64 orderURI
 
-    F->>W: registerOrder(orderHash, taker, offer, consideration, orderURI)
+    F->>W: registerOrder(orderHash, maker, taker, offer, consideration, signature, orderURI)
     W->>Z: registerOrder tx
+    Z->>Z: Verify maker signature (ECDSA or EIP-1271)
     Z->>Z: Validate ERC-20 whitelist
     Z->>Z: emit OrderRegistered(orderHash, maker, taker, orderURI)
     Z-->>F: Tx receipt

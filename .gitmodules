@@ -1,3 +1,6 @@
 [submodule "contracts/lib/seaport-types"]
 	path = contracts/lib/seaport-types
 	url = https://github.com/ProjectOpenSea/seaport-types
+[submodule "contracts/lib/solady"]
+	path = contracts/lib/solady
+	url = https://github.com/Vectorized/solady
