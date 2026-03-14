@@ -1,23 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchWalletNFTs } from '../lib/alchemy'
 
-/**
- * Deduplicate NFTs by contract+tokenId, summing balances.
- */
-function dedupeNFTs(nfts) {
-  const map = new Map()
-  for (const nft of nfts) {
-    const key = `${nft.contract.toLowerCase()}-${nft.tokenId}`
-    if (map.has(key)) {
-      const existing = map.get(key)
-      existing.balance = String(BigInt(existing.balance) + BigInt(nft.balance))
-    } else {
-      map.set(key, { ...nft })
-    }
-  }
-  return Array.from(map.values())
-}
-
 export default function NFTPicker({ address, chainId, onSelect, onClose }) {
   const [nfts, setNfts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -37,7 +20,7 @@ export default function NFTPicker({ address, chainId, onSelect, onClose }) {
 
     fetchWalletNFTs(address, chainId)
       .then(({ nfts: fetched, pageKey: nextKey }) => {
-        setNfts(dedupeNFTs(fetched))
+        setNfts(fetched)
         setPageKey(nextKey)
       })
       .catch((err) => setError(err.message))
@@ -49,7 +32,7 @@ export default function NFTPicker({ address, chainId, onSelect, onClose }) {
     setLoadingMore(true)
     try {
       const { nfts: more, pageKey: nextKey } = await fetchWalletNFTs(address, chainId, pageKey)
-      setNfts((prev) => dedupeNFTs([...prev, ...more]))
+      setNfts((prev) => [...prev, ...more])
       setPageKey(nextKey)
     } catch (err) {
       setError(err.message)

@@ -32,7 +32,7 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 - **Swap structure**: Multi-asset <-> multi-asset (each side can have 1+ items)
 - **Counterparty**: Optionally restricted to a specific address, or open to anyone
 - **Expiration**: Required (default 30 days, configurable in UI)
-- **Wallets**: EOAs and single-owner smart wallets (EIP-1271). Multisigs (e.g., Safe) are not supported due to the asynchronous multi-signer signing flow.
+- **Wallets**: EOAs and single-owner smart wallets (EIP-1271). Multisigs (e.g., Safe) are not supported as **makers** due to the asynchronous multi-signer signing flow, but work fine as **takers** (they call `fulfillOrder` directly as `msg.sender`).
 - **Cross-chain**: Out of scope (Seaport is per-chain)
 
 ---
@@ -82,7 +82,7 @@ For a simple NFT-for-NFT swap:
 1. **Maker creates an order off-chain:**
    - `offer`: The NFTs/tokens the maker is giving
    - `consideration`: The NFTs/tokens the maker wants, with `recipient` set to the maker's address
-   - `orderType`: `FULL_OPEN` (0) for open-to-anyone, or `FULL_RESTRICTED` (2) with a zone for taker restriction
+   - `orderType`: `FULL_RESTRICTED` (2) — always restricted, so the OTCZone validates every order (ERC-20 whitelist + optional taker restriction)
    - `startTime`: now
    - `endTime`: expiration timestamp
    - `conduitKey`: `bytes32(0)` (use Seaport directly for transfers)
@@ -96,7 +96,7 @@ For a simple NFT-for-NFT swap:
 #### Taker Restriction
 
 - **Open to anyone**: `orderType: FULL_RESTRICTED`, `zone: OTCZone address`, `zoneHash: bytes32(0)`. The zone still validates ERC-20 whitelist but allows any fulfiller.
-- **Restricted taker**: `orderType: FULL_RESTRICTED`, `zone: OTCZone address`, `zoneHash: bytes32(takerAddress)`. The zone validates both the fulfiller address and the ERC-20 whitelist.
+- **Restricted taker**: `orderType: FULL_RESTRICTED`, `zone: OTCZone address`, `zoneHash: bytes32(uint256(uint160(takerAddress)))`. The taker address is stored right-aligned in the zoneHash (standard ABI encoding). The zone extracts it via `address(uint160(uint256(zoneHash)))` and validates the fulfiller matches.
 
 **Note:** All orders use `FULL_RESTRICTED` with the OTCZone so that ERC-20 whitelist enforcement always applies. Open-to-anyone orders simply set `zoneHash` to `bytes32(0)`.
 
@@ -164,7 +164,7 @@ Hash-based routing (works on static hosts, no server config needed).
 2. **`#/create`** - Create a new swap offer
    - Two columns: "You Send" and "You Receive"
    - Each column: add/remove assets (token address + token ID, or ERC-20 amount)
-   - **NFT picker**: "Pick from wallet" button on each side opens a modal grid of NFTs. On the "You Send" side, fetches the connected wallet's NFTs. On the "You Receive" side, fetches the taker's NFTs (grayed out if no taker address is entered; debounce on address input). Uses Alchemy Portfolio API (`POST /data/v1/{apiKey}/assets/nfts/by-address`). Spam NFTs excluded via `excludeFilters: ["SPAM"]`. Manual entry remains as fallback.
+   - **NFT picker**: "Pick from wallet" button on each side opens a modal grid of NFTs. On the "You Send" side, fetches the connected wallet's NFTs. On the "You Receive" side, fetches the taker's NFTs (grayed out if no taker address is entered; debounce on address input). Uses Alchemy Portfolio API (`POST /data/v1/{apiKey}/assets/nfts/by-address`). Spam NFTs excluded via `excludeFilters: ["SPAM"]`. ERC-1155 tokens with balance > 1 show a quantity picker. Manual entry remains as fallback.
    - Optional: taker address field (with ENS resolution)
    - Expiration (default 30 days)
    - Asset preview with NFT metadata and verification status
@@ -276,6 +276,16 @@ Key points:
 - Non-dismissable education banner on swap page
 - ERC-20 whitelist enforced at three layers (frontend, registration, fulfillment) — prevents impostor token scams
 
+### Holdings Verification
+
+The swap page and offers page perform on-chain balance checks to verify that parties actually hold the assets in an order. This prevents users from attempting swaps that will revert.
+
+- **Swap page**: Checks maker's holdings (offer items) and taker's holdings (consideration items) via direct contract calls (`ownerOf` for ERC-721, `balanceOf` for ERC-1155/ERC-20, `provider.getBalance` for native ETH). Missing assets are flagged per-item, and the Accept button is disabled if either side is missing assets.
+- **Offers page**: Checks maker holdings for all open offers. Orders where the maker no longer holds assets are sorted to the bottom and visually dimmed.
+- **Error priority**: Wrong-taker errors take precedence over holdings errors, which take precedence over the Accept button.
+
+Friendly error messages map known Seaport/Zone revert selectors (e.g., `0x82b42900` → "You are not the authorized taker") to human-readable messages.
+
 ---
 
 ## 6. NFT Metadata Resolution
@@ -309,12 +319,13 @@ Unchanged from original spec. See section 5 of the original SPEC.md.
 2. UI fetches `OrderRegistered` event from the registration tx receipt and extracts the signed order
 3. UI validates: checks Seaport for order status, checks expiration, verifies signature
 4. UI displays all assets with verification indicators
-5. Counterparty reviews the trade
-6. Connects wallet
-7. UI checks and requests approvals for taker's assets to Seaport
-8. Clicks "Accept Swap"
-9. UI calls `fulfillOrder` — one transaction, atomic swap
-10. Assets are exchanged
+5. UI checks on-chain holdings for both maker (offer) and taker (consideration), flagging any missing assets
+6. Counterparty reviews the trade
+7. Connects wallet
+8. UI shows a step-by-step checklist: one step per token approval, plus the final fulfillment action. Each step shows status (pending → signing → confirming → done/failed).
+9. Clicks "Accept Swap"
+10. UI walks through approval steps, then calls `fulfillOrder` — one transaction, atomic swap
+11. Assets are exchanged
 
 ### Cancelling a Swap
 
@@ -400,6 +411,7 @@ All environment-specific values in `src/lib/constants.js`:
 - **react** + **react-dom** (v19): UI rendering
 - **react-router** (v7): Hash-based routing
 - **@reown/appkit** + **@reown/appkit-adapter-ethers**: Wallet connection
+- **buffer**: Node.js Buffer polyfill (required by seaport-js in the browser)
 
 ### Contract
 - **solady**: Signature verification (`SignatureCheckerLib` — EOA + EIP-1271 + EIP-2098 compact)
