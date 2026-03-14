@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useOutletContext, useNavigate } from 'react-router'
 import AssetInput from '../components/asset-input'
+import NFTPicker from '../components/nft-picker'
 import { ensureApproval, createOrder } from '../lib/contract'
 import { ZONE_ADDRESSES, WHITELISTED_ERC20 } from '../lib/constants'
 import { parseUnits } from 'ethers'
-import { resolveENS } from '../lib/ens'
+import { resolveENS, resolveENSName } from '../lib/ens'
 import TxChecklist, { buildSteps } from '../components/tx-checklist'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
@@ -24,19 +25,38 @@ export default function Create() {
   const [steps, setSteps] = useState([])
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
-  const [takerEns, setTakerEns] = useState(null)
+  const [takerEns, setTakerEns] = useState(null) // reverse: address → name
+  const [takerResolved, setTakerResolved] = useState(null) // forward: name → address
+  const [pickerSide, setPickerSide] = useState(null) // 'offer' | 'consideration' | null
 
-  // Resolve ENS for taker address
+  // Resolve ENS: address → name (reverse) or name → address (forward)
   useEffect(() => {
-    const addr = taker.trim()
-    if (!addr || !addr.match(/^0x[0-9a-fA-F]{40}$/)) {
+    const input = taker.trim()
+    if (!input) {
       setTakerEns(null)
+      setTakerResolved(null)
       return
     }
+
     let cancelled = false
-    resolveENS(addr).then((name) => {
-      if (!cancelled) setTakerEns(name)
-    })
+
+    if (/^0x[0-9a-fA-F]{40}$/.test(input)) {
+      // Input is an address — reverse lookup
+      setTakerResolved(null)
+      resolveENS(input).then((name) => {
+        if (!cancelled) setTakerEns(name)
+      })
+    } else if (input.includes('.')) {
+      // Input looks like an ENS name — forward lookup
+      setTakerEns(null)
+      resolveENSName(input).then((addr) => {
+        if (!cancelled) setTakerResolved(addr)
+      })
+    } else {
+      setTakerEns(null)
+      setTakerResolved(null)
+    }
+
     return () => { cancelled = true }
   }, [taker])
 
@@ -54,6 +74,24 @@ export default function Create() {
   const addAsset = useCallback((list, setList) => {
     setList([...list, emptyAsset()])
   }, [])
+
+  const handlePickerSelect = useCallback((asset) => {
+    const setList = pickerSide === 'offer' ? setMakerAssets : setTakerAssets
+    setList((prev) => {
+      // Replace first empty asset, or append
+      const emptyIndex = prev.findIndex((a) => !a.token && !a.tokenId)
+      if (emptyIndex !== -1) {
+        const next = [...prev]
+        next[emptyIndex] = asset
+        return next
+      }
+      return [...prev, asset]
+    })
+    setPickerSide(null)
+  }, [pickerSide])
+
+  // The effective taker address: either typed directly or resolved from ENS
+  const takerAddress = /^0x[0-9a-fA-F]{40}$/.test(taker.trim()) ? taker.trim() : takerResolved
 
   const handleSubmit = useCallback(async (e) => {
     e.preventDefault()
@@ -136,7 +174,7 @@ export default function Create() {
       const signIndex = txSteps.length - 2
       updateStep(signIndex, { status: 'signing' })
 
-      const takerAddr = taker.trim() || ZERO_ADDRESS
+      const takerAddr = takerAddress || ZERO_ADDRESS
       const orderParams = {
         taker: takerAddr,
         makerAssets,
@@ -195,9 +233,14 @@ export default function Create() {
                 side="offer"
               />
             ))}
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => addAsset(makerAssets, setMakerAssets)}>
-              + Add Asset
-            </button>
+            <div className="create-column-actions">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => addAsset(makerAssets, setMakerAssets)}>
+                + Add Manually
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setPickerSide('offer')}>
+                Pick from Wallet
+              </button>
+            </div>
           </div>
 
           <div className="create-column">
@@ -212,9 +255,20 @@ export default function Create() {
                 side="consideration"
               />
             ))}
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => addAsset(takerAssets, setTakerAssets)}>
-              + Add Asset
-            </button>
+            <div className="create-column-actions">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => addAsset(takerAssets, setTakerAssets)}>
+                + Add Manually
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setPickerSide('consideration')}
+                disabled={!takerAddress}
+                title={takerAddress ? 'Pick from taker wallet' : 'Enter a taker address first'}
+              >
+                Pick from Wallet
+              </button>
+            </div>
           </div>
         </div>
 
@@ -230,6 +284,7 @@ export default function Create() {
               spellCheck={false}
             />
             {takerEns && <span className="ens-hint">{takerEns}</span>}
+            {takerResolved && <span className="ens-hint">{takerResolved}</span>}
           </div>
           <div className="form-field">
             <label htmlFor="expiration">Expiration (defaults to 30 days)</label>
@@ -249,6 +304,15 @@ export default function Create() {
           {submitting ? 'Creating...' : 'Create Swap'}
         </button>
       </form>
+
+      {pickerSide && (
+        <NFTPicker
+          address={pickerSide === 'offer' ? wallet.address : takerAddress}
+          chainId={wallet.chainId}
+          onSelect={handlePickerSelect}
+          onClose={() => setPickerSide(null)}
+        />
+      )}
     </div>
   )
 }

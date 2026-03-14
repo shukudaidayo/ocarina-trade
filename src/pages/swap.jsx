@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useOutletContext } from 'react-router'
 import { getOrderFromTx, getOrderStatus, fulfillOrder, cancelOrder, ensureApproval, deriveOrderStatus } from '../lib/contract'
+import { checkHoldings } from '../lib/balances'
 import AssetCard from '../components/asset-card'
 import AddressDisplay from '../components/address-display'
 import WarningBanner from '../components/warning-banner'
@@ -11,6 +12,28 @@ import { ItemType } from '@opensea/seaport-js/lib/constants'
 import { formatUnits } from 'ethers'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+// Known Seaport/Zone error selectors
+const KNOWN_ERRORS = {
+  '0x82b42900': 'You are not the authorized taker for this swap.',
+  '0x98d4901c': 'This order has been cancelled.',
+}
+
+function friendlyFillError(err) {
+  const raw = err.data || err.message || ''
+  // Check for known error selectors
+  for (const [selector, msg] of Object.entries(KNOWN_ERRORS)) {
+    if (raw.includes(selector)) return msg
+  }
+  // Seaport reverts with generic data when token transfers fail
+  if (raw.includes('execution reverted') || err.code === 'CALL_EXCEPTION') {
+    return 'This swap cannot be completed. The maker may no longer hold the offered assets, or approvals may have been revoked.'
+  }
+  if (err.code === 'ACTION_REJECTED' || raw.includes('user rejected')) {
+    return 'Transaction rejected by user.'
+  }
+  return err.reason || err.message || 'Transaction failed'
+}
 
 export default function Swap() {
   const { chainId, txHash } = useParams()
@@ -24,6 +47,8 @@ export default function Swap() {
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [offerHoldings, setOfferHoldings] = useState(null) // array parallel to offer items
+  const [considerationHoldings, setConsiderationHoldings] = useState(null) // array parallel to consideration items
 
   // Fetch order data from tx hash
   useEffect(() => {
@@ -51,6 +76,34 @@ export default function Swap() {
     load()
     return () => { cancelled = true }
   }, [chainId, txHash])
+
+  // Check holdings when order is loaded and open
+  useEffect(() => {
+    if (!orderData || statusLabel !== 'open') return
+    let cancelled = false
+    const params = orderData.order.parameters
+
+    // Check maker holds offered assets
+    checkHoldings(Number(chainId), params.offerer, params.offer).then((results) => {
+      if (!cancelled) setOfferHoldings(results)
+    })
+
+    // Check taker holds consideration assets (only if wallet is the valid taker)
+    const takerAddr = orderData.taker
+    const isValidTaker = wallet && (
+      takerAddr === ZERO_ADDRESS ||
+      wallet.address.toLowerCase() === takerAddr.toLowerCase()
+    )
+    if (isValidTaker) {
+      checkHoldings(Number(chainId), wallet.address, params.consideration).then((results) => {
+        if (!cancelled) setConsiderationHoldings(results)
+      })
+    } else {
+      setConsiderationHoldings(null)
+    }
+
+    return () => { cancelled = true }
+  }, [orderData, statusLabel, chainId, wallet])
 
   const handleFill = useCallback(async () => {
     if (!wallet || !orderData) return
@@ -111,11 +164,12 @@ export default function Swap() {
       setStatusLabel('filled')
     } catch (err) {
       console.error(err)
+      const msg = friendlyFillError(err)
       const failedIndex = txSteps.findIndex((s) => s.status === 'signing' || s.status === 'confirming')
       if (failedIndex !== -1) {
-        updateStep(failedIndex, { status: 'failed', error: err.reason || err.message || 'Failed' })
+        updateStep(failedIndex, { status: 'failed', error: msg })
       }
-      setError(err.reason || err.message || 'Transaction failed')
+      setError(msg)
     } finally {
       setSubmitting(false)
     }
@@ -178,6 +232,8 @@ export default function Swap() {
     wallet.address.toLowerCase() === taker.toLowerCase()
   )
   const isOpen = statusLabel === 'open'
+  const isRestricted = taker !== ZERO_ADDRESS
+  const wrongTaker = wallet && isRestricted && !isTaker
   const wrongChain = wallet && wallet.chainId !== Number(chainId)
 
   // Parse offer/consideration for display (format fungible amounts to human-readable)
@@ -230,7 +286,7 @@ export default function Swap() {
             <AddressDisplay address={maker} chainId={Number(chainId)} showFull />
             {isMaker && <span className="you-badge">you</span>}
           </p>
-          <AssetList assets={offerAssets} chainId={chainId} />
+          <AssetList assets={offerAssets} chainId={chainId} holdings={offerHoldings} holdingsLabel="Maker" />
         </div>
         <div className="swap-arrow">&#8644;</div>
         <div className="swap-party">
@@ -245,7 +301,7 @@ export default function Swap() {
               </>
             )}
           </p>
-          <AssetList assets={considerationAssets} chainId={chainId} />
+          <AssetList assets={considerationAssets} chainId={chainId} holdings={considerationHoldings} holdingsLabel="You" />
         </div>
       </div>
 
@@ -273,11 +329,28 @@ export default function Swap() {
         <p className="form-error">Switch your wallet to chain {chainId} to interact with this swap.</p>
       )}
 
-      {wallet && !wrongChain && isOpen && !isExpired && isTaker && !isMaker && (
-        <button className="btn btn-primary" onClick={handleFill} disabled={submitting}>
-          {submitting ? 'Accepting...' : 'Accept Swap'}
-        </button>
+      {wallet && !wrongChain && isOpen && !isExpired && wrongTaker && !isMaker && (
+        <p className="form-error">This swap is restricted to a specific taker. Your connected wallet is not the authorized taker.</p>
       )}
+
+      {wallet && !wrongChain && isOpen && !isExpired && isTaker && !isMaker && (() => {
+        const makerMissing = offerHoldings && offerHoldings.some((h) => !h.held)
+        const takerMissing = considerationHoldings && considerationHoldings.some((h) => !h.held)
+        const blocked = makerMissing || takerMissing
+        return (
+          <>
+            {makerMissing && (
+              <p className="form-error">This swap cannot be completed — the maker no longer holds all offered assets.</p>
+            )}
+            {takerMissing && (
+              <p className="form-error">You do not hold all required assets to accept this swap.</p>
+            )}
+            <button className="btn btn-primary" onClick={handleFill} disabled={submitting || blocked}>
+              {submitting ? 'Accepting...' : 'Accept Swap'}
+            </button>
+          </>
+        )
+      })()}
 
       {wallet && !wrongChain && isOpen && isMaker && (
         <button className="btn btn-cancel" onClick={handleCancel} disabled={submitting}>
@@ -288,11 +361,16 @@ export default function Swap() {
   )
 }
 
-function AssetList({ assets, chainId }) {
+function AssetList({ assets, chainId, holdings, holdingsLabel }) {
   return (
     <div className="asset-list">
       {assets.map((asset, i) => (
-        <AssetCard key={i} asset={asset} chainId={Number(chainId)} />
+        <div key={i}>
+          <AssetCard asset={asset} chainId={Number(chainId)} />
+          {holdings && !holdings[i]?.held && (
+            <p className="asset-missing">{holdingsLabel} does not hold this asset</p>
+          )}
+        </div>
       ))}
     </div>
   )

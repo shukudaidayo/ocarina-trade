@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useOutletContext } from 'react-router'
 import { queryOrderEvents, getOrderStatus, deriveOrderStatus } from '../lib/contract'
+import { checkHoldings } from '../lib/balances'
 import { truncateAddress } from '../lib/wallet'
 import AddressDisplay from '../components/address-display'
 import { ZONE_ADDRESSES, WHITELISTED_ERC20 } from '../lib/constants'
@@ -69,6 +70,31 @@ export default function Offers() {
     return () => { cancelled = true }
   }, [])
 
+  // Check maker holdings for open offers
+  useEffect(() => {
+    const openOrders = orders.filter((o) => o.status === 'open' && o.order?.parameters)
+    if (openOrders.length === 0) return
+
+    let cancelled = false
+
+    Promise.all(
+      openOrders.map(async (o) => {
+        const results = await checkHoldings(DEFAULT_CHAIN_ID, o.maker, o.order.parameters.offer)
+        return { orderHash: o.orderHash, makerHoldsAll: results.every((h) => h.held) }
+      })
+    ).then((checks) => {
+      if (cancelled) return
+      const holdingsMap = {}
+      for (const c of checks) holdingsMap[c.orderHash] = c.makerHoldsAll
+      setOrders((prev) => prev.map((o) => ({
+        ...o,
+        makerHoldsAll: holdingsMap[o.orderHash] ?? true,
+      })))
+    })
+
+    return () => { cancelled = true }
+  }, [orders.length]) // re-run when orders finish loading
+
   // Reset pagination when switching tabs
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
@@ -87,6 +113,15 @@ export default function Offers() {
     if (tab === 'filled') return o.status === 'filled'
     return false
   })
+
+  // Sort open offers: valid first, then invalid (maker doesn't hold assets)
+  if (tab === 'open') {
+    filtered.sort((a, b) => {
+      const aValid = a.makerHoldsAll !== false ? 1 : 0
+      const bValid = b.makerHoldsAll !== false ? 1 : 0
+      return bValid - aValid
+    })
+  }
 
   const visible = filtered.slice(0, visibleCount)
   const hasMore = visibleCount < filtered.length
@@ -133,7 +168,7 @@ export default function Offers() {
       {!loading && visible.length > 0 && (
         <div className="offers-list">
           {visible.map((order) => (
-            <OfferCard key={order.orderHash} order={order} chainId={DEFAULT_CHAIN_ID} />
+            <OfferCard key={order.orderHash} order={order} chainId={DEFAULT_CHAIN_ID} invalidHoldings={order.makerHoldsAll === false} />
           ))}
         </div>
       )}
@@ -151,12 +186,12 @@ export default function Offers() {
   )
 }
 
-function OfferCard({ order, chainId }) {
+function OfferCard({ order, chainId, invalidHoldings }) {
   const swapUrl = `/swap/${chainId}/${order.transactionHash}`
   const params = order.order?.parameters
 
   return (
-    <Link to={swapUrl} className="offer-card">
+    <Link to={swapUrl} className={`offer-card${invalidHoldings ? ' offer-card-invalid' : ''}`}>
       <div className="offer-card-side">
         <span className="offer-label">Maker</span>
         <AddressDisplay address={order.maker} chainId={chainId} />
@@ -176,6 +211,9 @@ function OfferCard({ order, chainId }) {
         <span className={`status-badge status-${order.status}`}>
           {order.status}
         </span>
+        {invalidHoldings && (
+          <span className="offer-card-warning">Maker no longer holds assets</span>
+        )}
       </div>
     </Link>
   )

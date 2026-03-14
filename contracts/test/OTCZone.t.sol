@@ -293,7 +293,7 @@ contract OTCZoneTest is Test {
     }
 
     function test_validateOrder_restrictedTaker_authorized() public {
-        bytes32 zoneHash = bytes32(bytes20(taker));
+        bytes32 zoneHash = bytes32(uint256(uint160(taker)));
         ZoneParameters memory params = _zoneParams(zoneHash);
         params.fulfiller = taker;
 
@@ -302,7 +302,7 @@ contract OTCZoneTest is Test {
     }
 
     function test_validateOrder_restrictedTaker_unauthorized() public {
-        bytes32 zoneHash = bytes32(bytes20(taker));
+        bytes32 zoneHash = bytes32(uint256(uint160(taker)));
         ZoneParameters memory params = _zoneParams(zoneHash);
         params.fulfiller = stranger;
 

@@ -148,7 +148,8 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 - **Web3**: ethers.js v6
 - **Wallet connection**: Reown AppKit (WalletConnect + injected providers)
 - **Styling**: Minimal custom CSS. No CSS framework.
-- **NFT metadata**: On-chain tokenURI + IPFS/HTTP resolution
+- **NFT data**: Alchemy Portfolio API (wallet NFT enumeration + metadata)
+- **NFT metadata fallback**: On-chain tokenURI + IPFS/HTTP resolution
 - **Build**: Vite
 - **Hosting**: Static site (GitHub Pages, Cloudflare Pages, or IPFS)
 
@@ -163,6 +164,7 @@ Hash-based routing (works on static hosts, no server config needed).
 2. **`#/create`** - Create a new swap offer
    - Two columns: "You Send" and "You Receive"
    - Each column: add/remove assets (token address + token ID, or ERC-20 amount)
+   - **NFT picker**: "Pick from wallet" button on each side opens a modal grid of NFTs. On the "You Send" side, fetches the connected wallet's NFTs. On the "You Receive" side, fetches the taker's NFTs (grayed out if no taker address is entered; debounce on address input). Uses Alchemy Portfolio API (`POST /data/v1/{apiKey}/assets/nfts/by-address`). Spam NFTs excluded via `excludeFilters: ["SPAM"]`. Manual entry remains as fallback.
    - Optional: taker address field (with ENS resolution)
    - Expiration (default 30 days)
    - Asset preview with NFT metadata and verification status
@@ -325,12 +327,18 @@ Unchanged from original spec. See section 5 of the original SPEC.md.
 
 ## 8. Future Roadmap
 
+### Mainnet Deployment
+- Deploy OTCZone to a vanity address via CREATE2 (e.g., using [create2crunch](https://github.com/0age/create2crunch) with Nick's Factory at `0x4e59b44847b379578588920cA78FbF26c0B4956C`). A recognizable address prefix lets users quickly verify they're signing for the correct contract.
+- Register an ENS name (e.g., `otczone.eth`) pointing to the contract address for human-readable identification on block explorers.
+- Verify contract source on Etherscan.
+
 ### V1.1 - Additional EVM Chains
 - Seaport is already deployed on Polygon, Arbitrum, Base, Optimism, etc.
 - Add chain selector to the UI
 - Chain ID is embedded in the EIP-712 domain, so orders are inherently chain-specific
-- Deploy OTCZone per chain (same constructor args, trivial deployment)
+- Deploy OTCZone per chain (constructor args differ per chain due to token whitelist, so addresses will differ)
 - Update constants with chain-specific RPCs, OTCZone addresses, and verified token lists
+- Verify contract source on each chain's block explorer
 
 ### V1.2 - Criteria-Based Offers
 - Seaport natively supports criteria-based offers (e.g., "any Bored Ape")
@@ -340,6 +348,11 @@ Unchanged from original spec. See section 5 of the original SPEC.md.
 ### V2 - Solana Support
 - Separate program, shared UI
 - Not related to Seaport
+
+### Gas Optimization — Compact orderURI Encoding
+- Replace JSON + base64 `orderURI` with a compact binary encoding, stripping field names and omitting derivable fields (zone, orderType, conduitKey). Could reduce orderURI calldata by ~60-70%.
+- No contract changes needed — `orderURI` is opaque to the contract.
+- Trade-off: harder to debug, harder to fork, fragile coupling to Seaport order structure. Not worth it unless users report gas as a pain point.
 
 ### Not Planned
 - Order book / listing marketplace
@@ -366,13 +379,16 @@ All environment-specific values in `src/lib/constants.js`:
 - RPC endpoint URLs per chain
 - Verified token list remote URL
 - IPFS gateway URL
+- Alchemy API key (via `VITE_ALCHEMY_API_KEY` env var)
+- Alchemy network identifiers per chain
 
-### No Proprietary Services
-Zero accounts, API keys, or proprietary services required:
-- NFT metadata: on-chain tokenURI + public IPFS gateways
-- Blockchain data: public RPC endpoints
-- Hosting: any static file host
-- Verified token list: static JSON file
+### External Services
+- **Reown AppKit**: Wallet connection (requires project ID via `VITE_REOWN_PROJECT_ID`)
+- **Alchemy Portfolio API**: NFT enumeration and metadata for the wallet picker (requires API key via `VITE_ALCHEMY_API_KEY`). The app remains functional without it — manual asset entry is always available as a fallback.
+- **Blockchain data**: Public RPC endpoints
+- **NFT metadata fallback**: On-chain tokenURI + public IPFS gateways
+- **Hosting**: Any static file host
+- **Verified token list**: Static JSON file
 
 ---
 

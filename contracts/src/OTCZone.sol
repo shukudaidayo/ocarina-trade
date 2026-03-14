@@ -87,7 +87,7 @@ contract OTCZone is ZoneInterface {
         returns (bytes4)
     {
         // Check taker restriction via zoneHash
-        address allowedTaker = address(bytes20(zoneParameters.zoneHash));
+        address allowedTaker = address(uint160(uint256(zoneParameters.zoneHash)));
         if (allowedTaker != address(0) && zoneParameters.fulfiller != allowedTaker) {
             revert Unauthorized();
         }

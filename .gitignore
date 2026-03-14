@@ -12,6 +12,10 @@ contracts/lib/
 # Reference codebases
 refs/
 
+# Dev tools
+deploy.html
+mint-1155.html
+
 # Claude
 .claude/
 
