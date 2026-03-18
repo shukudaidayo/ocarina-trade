@@ -50,4 +50,4 @@ forge test         # Run tests
 
 ## License
 
-TBD
+GPL-3.0-only. See [LICENSE](LICENSE).

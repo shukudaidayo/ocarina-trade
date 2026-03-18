@@ -24,6 +24,7 @@ Peer-to-peer NFT OTC swap site. No backend, no database — all state is on-chai
 - Anti-scam token verification is a first-class concern
 - Seaport handles all asset transfers — OTCZone never touches user funds
 - Everything should be forkable and maintainable by someone else
+- License: GPL-3.0-only (derivatives must stay open source)
 
 ## Commands
 

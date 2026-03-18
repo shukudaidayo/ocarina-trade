@@ -414,7 +414,7 @@ Unchanged from original spec. See section 5 of the original SPEC.md.
 ## 9. Forkability & Continuity
 
 ### License
-MIT.
+GPL-3.0-only. Derivatives must remain open source. See `LICENSE` in the project root.
 
 ### No Contract Dependency
 Seaport is permissionless and immutable — it cannot be shut down or upgraded out from under us. Anyone can build a frontend that talks to it.
