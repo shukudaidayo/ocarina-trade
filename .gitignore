@@ -18,6 +18,8 @@ mint-1155.html
 
 # Claude
 .claude/
+CLAUDE.md
+.claudeignore
 
 # OS
 .DS_Store
