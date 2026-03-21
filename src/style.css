@@ -886,6 +886,8 @@ footer {
 
 .swap-memo {
   font-style: italic;
+  unicode-bidi: plaintext;
+  direction: ltr;
 }
 
 @media (max-width: 640px) {

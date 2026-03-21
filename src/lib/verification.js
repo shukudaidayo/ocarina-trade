@@ -68,7 +68,8 @@ export async function getVerificationStatus(chainId, tokenAddress, metadataName)
 export function getEtherscanUrl(chainId, address) {
   const explorers = {
     1: 'https://etherscan.io',
-    11155111: 'https://sepolia.etherscan.io',
+    8453: 'https://basescan.org',
+    137: 'https://polygonscan.com',
   }
   const base = explorers[chainId] || explorers[1]
   return `${base}/address/${address}`

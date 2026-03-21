@@ -4,38 +4,55 @@ import { queryOrderEvents, getOrderStatus, deriveOrderStatus } from '../lib/cont
 import { checkHoldings } from '../lib/balances'
 import { truncateAddress } from '../lib/wallet'
 import AddressDisplay from '../components/address-display'
-import { ZONE_ADDRESSES, WHITELISTED_ERC20 } from '../lib/constants'
+import { ZONE_ADDRESSES, CHAINS, WHITELISTED_ERC20 } from '../lib/constants'
 import { formatUnits } from 'ethers'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const PAGE_SIZE = 20
 
-// Use the first chain that has a deployed zone contract
-const DEFAULT_CHAIN_ID = Number(
-  Object.entries(ZONE_ADDRESSES).find(([, addr]) => addr !== null)?.[0] ?? 0
-)
+// Chains that have a deployed zone contract
+const DEPLOYED_CHAINS = Object.entries(ZONE_ADDRESSES)
+  .filter(([, addr]) => addr !== null)
+  .map(([id]) => Number(id))
 
 export default function Offers() {
   const wallet = useOutletContext()
+  const [chainId, setChainId] = useState(() => {
+    // Default to wallet chain if deployed, otherwise first deployed chain
+    const walletChain = wallet?.chainId
+    if (walletChain && ZONE_ADDRESSES[walletChain]) return walletChain
+    return DEPLOYED_CHAINS[0] || 0
+  })
   const [tab, setTab] = useState('mine')
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
+  // Follow wallet chain when it changes
   useEffect(() => {
-    if (!DEFAULT_CHAIN_ID || !ZONE_ADDRESSES[DEFAULT_CHAIN_ID]) {
+    if (wallet?.chainId && ZONE_ADDRESSES[wallet.chainId]) {
+      setChainId(wallet.chainId)
+    }
+  }, [wallet?.chainId])
+
+  useEffect(() => {
+    if (!chainId || !ZONE_ADDRESSES[chainId]) {
       setLoading(false)
       setError('No OTCZone deployed yet.')
       return
     }
 
+    setOrders([])
+    setLoading(true)
+    setError(null)
+
     let cancelled = false
     async function load() {
       try {
         const registrations = await queryOrderEvents(
-          DEFAULT_CHAIN_ID,
-          ZONE_ADDRESSES[DEFAULT_CHAIN_ID],
+          chainId,
+          ZONE_ADDRESSES[chainId],
         )
 
         if (cancelled) return
@@ -44,7 +61,7 @@ export default function Offers() {
         const enriched = await Promise.all(
           registrations.map(async (reg) => {
             try {
-              const seaportStatus = await getOrderStatus(DEFAULT_CHAIN_ID, reg.orderHash)
+              const seaportStatus = await getOrderStatus(chainId, reg.orderHash)
               const endTime = reg.order?.parameters?.endTime
               const status = deriveOrderStatus(seaportStatus, endTime)
               return { ...reg, status }
@@ -68,7 +85,7 @@ export default function Offers() {
     }
     load()
     return () => { cancelled = true }
-  }, [])
+  }, [chainId])
 
   // Check maker holdings for open offers
   useEffect(() => {
@@ -79,7 +96,7 @@ export default function Offers() {
 
     Promise.all(
       openOrders.map(async (o) => {
-        const results = await checkHoldings(DEFAULT_CHAIN_ID, o.maker, o.order.parameters.offer)
+        const results = await checkHoldings(chainId, o.maker, o.order.parameters.offer)
         return { orderHash: o.orderHash, makerHoldsAll: results.every((h) => h.held) }
       })
     ).then((checks) => {
@@ -93,7 +110,7 @@ export default function Offers() {
     })
 
     return () => { cancelled = true }
-  }, [orders.length]) // re-run when orders finish loading
+  }, [orders.length, chainId]) // re-run when orders finish loading
 
   // Reset pagination when switching tabs
   useEffect(() => {
@@ -129,6 +146,20 @@ export default function Offers() {
   return (
     <div className="page offers">
       <h1>Offers</h1>
+
+      {DEPLOYED_CHAINS.length > 1 && (
+        <div className="chain-selector">
+          {DEPLOYED_CHAINS.map((id) => (
+            <button
+              key={id}
+              className={`tab ${id === chainId ? 'active' : ''}`}
+              onClick={() => setChainId(id)}
+            >
+              {CHAINS[id]?.name || `Chain ${id}`}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="offers-tabs">
         <button
@@ -168,7 +199,7 @@ export default function Offers() {
       {!loading && visible.length > 0 && (
         <div className="offers-list">
           {visible.map((order) => (
-            <OfferCard key={order.orderHash} order={order} chainId={DEFAULT_CHAIN_ID} invalidHoldings={order.makerHoldsAll === false} />
+            <OfferCard key={order.orderHash} order={order} chainId={chainId} invalidHoldings={order.makerHoldsAll === false} />
           ))}
         </div>
       )}

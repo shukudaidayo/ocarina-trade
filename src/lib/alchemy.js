@@ -2,7 +2,8 @@ const ALCHEMY_API_KEY = import.meta.env.VITE_ALCHEMY_API_KEY
 
 const CHAIN_NETWORKS = {
   1: 'eth-mainnet',
-  11155111: 'eth-sepolia',
+  8453: 'base-mainnet',
+  137: 'polygon-mainnet',
 }
 
 /**

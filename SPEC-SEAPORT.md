@@ -10,7 +10,7 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 
 ### Why Seaport
 
-- **Near-zero custom contract surface.** The only custom contract (OTCZone, ~150 lines) handles taker restriction, ERC-20 whitelisting, signature-verified order discovery — it never touches user funds. Seaport handles all asset transfers.
+- **Near-zero custom contract surface.** The only custom contract (OTCZone, ~135 lines) handles taker restriction, ERC-20 whitelisting, signature-verified order discovery — it never touches user funds. Seaport handles all asset transfers.
 - **Battle-tested security.** Multiple professional audits, billions in volume, years of production use.
 - **No liability.** We are building a frontend, not a protocol. The smart contract layer is OpenSea's responsibility.
 - **Free order creation.** Seaport uses off-chain signatures — creating an offer costs zero gas.
@@ -28,7 +28,7 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 ## 2. V1 Scope
 
 - **Chains**: Ethereum, Base, Polygon
-- **Token types**: ERC-721, ERC-1155, ERC-20 (whitelisted only), and native ETH
+- **Token types**: ERC-721, ERC-1155, ERC-20 (whitelisted only), and native ETH (taker side only — Seaport requires the caller to provide ETH via `msg.value`, so the maker cannot offer native ETH in a standard `fulfillOrder` flow)
 - **Swap structure**: Multi-asset <-> multi-asset (each side can have 1+ items)
 - **Counterparty**: Optionally restricted to a specific address, or open to anyone
 - **Expiration**: Required (default 30 days, configurable in UI)
@@ -46,7 +46,6 @@ Seaport (v1.6) is deployed at a canonical address on Ethereum and all major EVM 
 
 **Canonical addresses:**
 - Seaport 1.6: `0x0000000000000068F116a894984e2DB1123eB395`
-- Conduit Controller: `0x00000000F9490004C11Cef243f5400493c00Ad63`
 
 #### Seaport Order Model
 
@@ -101,7 +100,7 @@ For a simple NFT-for-NFT swap:
 
 **Note:** All orders use `FULL_RESTRICTED` with the OTCZone so that ERC-20 whitelist enforcement always applies. Open-to-anyone orders simply set `zoneHash` to `bytes32(0)`.
 
-The **OTCZone** is a minimal custom contract (~150 lines) deployed once per chain. It combines three responsibilities: taker restriction, ERC-20 whitelist enforcement, and order registration.
+The **OTCZone** is a minimal custom contract (~135 lines) deployed once per chain. It combines three responsibilities: taker restriction, ERC-20 whitelist enforcement, and order registration.
 
 Implementation: `contracts/src/OTCZone.sol`
 
@@ -163,7 +162,8 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 - **Wallet connection**: Reown AppKit (WalletConnect + injected providers)
 - **Styling**: Minimal custom CSS. No CSS framework.
 - **NFT data**: Alchemy Portfolio API (wallet NFT enumeration + metadata)
-- **NFT metadata fallback**: On-chain tokenURI + IPFS/HTTP resolution
+- **NFT metadata fallback**: On-chain tokenURI + IPFS/HTTP/Arweave resolution
+- **ENS**: Forward resolution (name → address) for taker input, reverse resolution (address → name) for display throughout the UI. Uses mainnet provider since ENS lives on L1.
 - **Build**: Vite
 - **Hosting**: Static site (GitHub Pages, Cloudflare Pages, or IPFS)
 
@@ -196,11 +196,12 @@ Hash-based routing (works on static hosts, no server config needed).
    - Anti-scam education banner (non-dismissable)
 
 4. **`#/offers`** - Browse offers
+   - Chain selector (Ethereum / Base / Polygon) — auto-follows connected wallet's chain
    - "My Offers" tab (default): orders involving connected wallet
    - "All Open" tab: paginated, all open orders
    - "Completed" tab: filled orders
    - Populated by querying `OrderRegistered` events from OTCZone, cross-referenced with Seaport for order status (filled/cancelled)
-   - Offer cards show memo (truncated) when present
+   - Memos are not displayed on offer cards (removed — broke card layout). Memos are visible on the swap detail page only.
 
 #### URL Encoding
 
@@ -246,7 +247,7 @@ const { executeAllActions } = await seaport.createOrder({
   consideration: [
     { itemType: 2, token: wantedNftAddress, identifier: wantedTokenId, recipient: makerAddress },
   ],
-  orderType: 2,  // FULL_RESTRICTED (always, for zone validation)
+  restrictedByZone: true,  // FULL_RESTRICTED (always, for zone validation)
   endTime: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
 })
 
@@ -286,7 +287,7 @@ const { isCancelled, totalFilled, totalSize } = await seaport.getOrderStatus(ord
 Unchanged from original spec. See sections 4.1-4.3 of the original SPEC.md.
 
 Key points:
-- Verified token list (bundled + remote GitHub fetch)
+- Verified token list (bundled JSON, supplemented by Alchemy OpenSea safelist status at runtime)
 - Verified / Unverified / Suspicious indicators per token
 - Impostor detection (same name, different address)
 - Full contract addresses always visible, linked to Etherscan
@@ -309,13 +310,13 @@ The memo field is stored permanently in on-chain event logs and cannot be delete
 
 - **Plain text only.** React's default text rendering escapes HTML/script injection. Never use `dangerouslySetInnerHTML` on memos.
 - **No auto-linking.** URLs in memos are displayed as plain text, not clickable links. Prevents phishing.
-- **Truncated on offers page.** Limits visibility of spam in the browsing view.
+- **Swap page only.** Memos are only displayed on the swap detail page, not on offer cards in the browse view.
+- **CSS `unicode-bidi: plaintext` + `direction: ltr`** on memo elements to neutralize RTL override and homograph attacks.
 
 If abuse occurs post-launch, additional mitigations available without contract changes:
 
 - **OrderHash blocklist.** A static array of order hashes in the frontend to suppress specific memos from rendering. Trivial to add.
 - **Client-side content filter.** Regex blocklist for slurs or known spam patterns.
-- **CSS `unicode-bidi: plaintext` + `direction: ltr`** on memo elements to neutralize RTL override and homograph attacks.
 - **Nuclear option.** Stop rendering memos entirely in the frontend — the contract doesn't change, we just hide the field.
 
 ---
@@ -324,7 +325,7 @@ If abuse occurs post-launch, additional mitigations available without contract c
 
 Unchanged from original spec. See section 5 of the original SPEC.md.
 
-- On-chain tokenURI/uri call → IPFS/HTTP/data URI resolution
+- On-chain tokenURI/uri call → IPFS/HTTP/data URI/Arweave (`ar://`) resolution
 - sessionStorage cache
 
 ---
@@ -402,6 +403,20 @@ All contracts deployed via CREATE2 (Nick's Factory at `0x4e59b44847b379578588920
 - No contract changes needed — `orderURI` is opaque to the contract.
 - Trade-off: harder to debug, harder to fork, fragile coupling to Seaport order structure. Not worth it unless users report gas as a pain point.
 
+### Privy Cross-App Wallet Support
+- Platforms like Courtyard.io (Polygon) and Beezie (Base) use Privy embedded wallets. Their users can't currently connect to external dApps like ours.
+- Privy's `@privy-io/cross-app-connect` SDK exposes `toPrivyWalletProvider()`, which returns a standard EIP-1193 provider — compatible with ethers.js, no wagmi/viem required at runtime.
+- **Blocker**: Each provider app must enable cross-app sharing in their Privy dashboard. As of 2026-03-20, neither Courtyard nor Beezie has enabled this.
+  - Courtyard Privy app ID: `cldj2z0b70001mm08l39me9k5`
+  - Beezie Privy app ID: `clozdtqzz0070l80gtizlvizg`
+- No code changes needed on our end until a provider enables sharing. Integration is ~50 lines: create an EIP-1193 provider with `toPrivyWalletProvider({ providerAppId, chains })`, wrap in `ethers.BrowserProvider`, and use the signer as normal.
+- Privy was acquired by Stripe in mid-2025 — watch for API changes.
+
+### Farcaster / Base App Mini-Apps
+- The site's architecture (no backend, hash routing, standard EIP-1193 wallet interface) is compatible with mini-app embedding.
+- Main work: detect mini-app context and swap the wallet provider (Farcaster SDK or Coinbase Wallet SDK instead of Reown AppKit). Everything downstream (ethers.js, Seaport calls) stays the same.
+- Requires a separate OTCZone deployment per chain (already done for Base and Polygon).
+
 ### Not Planned
 - Order book / listing marketplace
 - Chat / messaging
@@ -425,10 +440,11 @@ All environment-specific values in `src/lib/constants.js`:
 - OTCZone deploy block per chain (for efficient event queries)
 - ERC-20 whitelist addresses per chain
 - RPC endpoint URLs per chain
-- Verified token list remote URL
 - IPFS gateway URL
+
+Alchemy-specific config lives in `src/lib/alchemy.js`:
 - Alchemy API key (via `VITE_ALCHEMY_API_KEY` env var)
-- Alchemy network identifiers per chain
+- Alchemy network identifiers per chain (`CHAIN_NETWORKS`)
 
 ### External Services
 - **Reown AppKit**: Wallet connection (requires project ID via `VITE_REOWN_PROJECT_ID`)
@@ -436,7 +452,7 @@ All environment-specific values in `src/lib/constants.js`:
 - **Blockchain data**: Public RPC endpoints
 - **NFT metadata fallback**: On-chain tokenURI + public IPFS gateways
 - **Hosting**: Any static file host
-- **Verified token list**: Static JSON file
+- **Verified token list**: Bundled static JSON file, supplemented by Alchemy's OpenSea safelist status for runtime verification of unlisted contracts
 
 ---
 
@@ -459,7 +475,7 @@ All environment-specific values in `src/lib/constants.js`:
 - **@vitejs/plugin-react**: JSX transform
 - **foundry** (forge): OTCZone contract development and testing
 
-The only custom contract is the OTCZone (~150 lines), deployed once per chain. Foundry is needed only for this contract.
+The only custom contract is the OTCZone (~135 lines), deployed once per chain. Foundry is needed only for this contract.
 
 ---
 
