@@ -2,7 +2,7 @@
 
 Peer-to-peer OTC swaps for NFTs and tokens. No backend, no accounts, no middleman.
 
-**Live site:** [shukudaidayo.github.io/otc-swap](https://shukudaidayo.github.io/otc-swap/)
+**Live site:** [ocarina.trade](https://ocarina.trade)
 
 ## What it does
 
@@ -20,6 +20,14 @@ The only custom contract is **OTCZone** (~110 lines), which:
 - Emits events for order discovery (the offers page)
 
 OTCZone never touches user funds. Assets stay in your wallet until the swap executes.
+
+## Contracts
+
+| Network | Address |
+|---|---|
+| Ethereum | [`0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc`](https://etherscan.io/address/0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc) |
+| Base | [`0x07C00000090AdB1D14b093C1A6b40135779af27C`](https://basescan.org/address/0x07C00000090AdB1D14b093C1A6b40135779af27C) |
+| Polygon | [`0x07C000000b63fEe6aC08B91ad7aD3d999b28d740`](https://polygonscan.com/address/0x07C000000b63fEe6aC08B91ad7aD3d999b28d740) |
 
 ## Trust model
 

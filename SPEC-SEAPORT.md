@@ -27,14 +27,14 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 
 ## 2. V1 Scope
 
-- **Chain**: Ethereum Mainnet (Sepolia for testing)
+- **Chains**: Ethereum, Base, Polygon
 - **Token types**: ERC-721, ERC-1155, ERC-20 (whitelisted only), and native ETH
 - **Swap structure**: Multi-asset <-> multi-asset (each side can have 1+ items)
 - **Counterparty**: Optionally restricted to a specific address, or open to anyone
 - **Expiration**: Required (default 30 days, configurable in UI)
 - **Memo**: Optional short message (max 280 bytes) attached to the order at registration
 - **Wallets**: EOAs and single-owner smart wallets (EIP-1271). Multisigs (e.g., Safe) are not supported as **makers** due to the asynchronous multi-signer signing flow, but work fine as **takers** (they call `fulfillOrder` directly as `msg.sender`).
-- **Cross-chain**: Out of scope (Seaport is per-chain)
+- **Cross-chain**: Out of scope (each chain has its own OTCZone deployment; Seaport orders are chain-specific)
 
 ---
 
@@ -109,7 +109,7 @@ The contract implements Seaport 1.6's `ZoneInterface` (from `seaport-types`). It
 
 It serves three purposes:
 1. **Taker validation**: Checks that the fulfiller matches the allowed taker in `zoneHash`.
-2. **ERC-20 whitelist**: Rejects orders containing non-whitelisted ERC-20 tokens, both at registration and at fulfillment. Whitelist is set at deployment (immutable — no admin can modify it). Mainnet whitelist: WETH, USDC, USDT, USDS, EURC.
+2. **ERC-20 whitelist**: Rejects orders containing non-whitelisted ERC-20 tokens, both at registration and at fulfillment. Whitelist is set at deployment (immutable — no admin can modify it). Whitelists per chain: Ethereum (WETH, USDC, USDT, USDS, EURC), Base (WETH, USDC, USDS, EURC), Polygon (WETH, USDC, USDT0).
 3. **Order registry**: `registerOrder` publishes signed orders for discovery. It accepts a single `OrderRegistration` struct (defined outside the contract for clean ABI generation) containing the order hash, maker, taker, offer/consideration items, signature, orderURI, and an optional memo (max 280 bytes). It verifies the maker's EIP-712 signature on-chain using Solady's `SignatureCheckerLib`, which supports EOA signatures (both standard 65-byte and EIP-2098 compact 64-byte) and EIP-1271 contract wallet signatures. The indexed `maker` in the `OrderRegistered` event is cryptographically guaranteed to be the actual order signer — regardless of who submits the transaction. This allows proxy wallets, gas sponsors, and smart wallets to register orders on behalf of makers.
 
 ```solidity
@@ -126,7 +126,7 @@ struct OrderRegistration {
 ```
 
 ERC-20 enforcement happens at three layers:
-- **Frontend**: The Create page only offers whitelisted ERC-20s (WETH, USDC, USDT, USDS, EURC).
+- **Frontend**: The Create page only offers whitelisted ERC-20s for the connected chain.
 - **Registration**: `registerOrder` reverts if the order contains a non-whitelisted ERC-20.
 - **Fulfillment**: `validateOrder` reverts if Seaport tries to settle an order with a non-whitelisted ERC-20.
 
@@ -368,22 +368,21 @@ Unchanged from original spec. See section 5 of the original SPEC.md.
 
 ---
 
-## 8. Future Roadmap
+## 8. Deployments
 
-### Mainnet Deployment
-- Deploy OTCZone to a vanity address via CREATE2 (e.g., using [create2crunch](https://github.com/0age/create2crunch) with Nick's Factory at `0x4e59b44847b379578588920cA78FbF26c0B4956C`). A recognizable address prefix lets users quickly verify they're signing for the correct contract.
-- Register an ENS name (e.g., `otczone.eth`) pointing to the contract address for human-readable identification on block explorers.
-- Verify contract source on Etherscan.
+All contracts deployed via CREATE2 (Nick's Factory at `0x4e59b44847b379578588920cA78FbF26c0B4956C`) with a `0x07C00000` vanity prefix. Verified on each chain's block explorer.
 
-### V1.1 - Additional EVM Chains
-- Seaport is already deployed on Polygon, Arbitrum, Base, Optimism, etc.
-- Add chain selector to the UI
-- Chain ID is embedded in the EIP-712 domain, so orders are inherently chain-specific
-- Deploy OTCZone per chain (constructor args differ per chain due to token whitelist, so addresses will differ)
-- Update constants with chain-specific RPCs, OTCZone addresses, and verified token lists
-- Verify contract source on each chain's block explorer
+| Chain | Address | Whitelisted ERC-20s |
+|---|---|---|
+| Ethereum | `0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc` | WETH, USDC, USDT, USDS, EURC |
+| Base | `0x07C00000090AdB1D14b093C1A6b40135779af27C` | WETH, USDC, USDS, EURC |
+| Polygon | `0x07C000000b63fEe6aC08B91ad7aD3d999b28d740` | WETH, USDC, USDT0 |
 
-### V1.2 - Criteria-Based Offers
+---
+
+## 9. Future Roadmap
+
+### Criteria-Based Offers
 - Seaport natively supports criteria-based offers (e.g., "any Bored Ape")
 - Use merkle trees of token IDs, or wildcard (criteria = 0 for any token in collection)
 - UI: "I'll trade my X for any token from collection Y"
@@ -411,7 +410,7 @@ Unchanged from original spec. See section 5 of the original SPEC.md.
 
 ---
 
-## 9. Forkability & Continuity
+## 10. Forkability & Continuity
 
 ### License
 GPL-3.0-only. Derivatives must remain open source. See `LICENSE` in the project root.
@@ -441,7 +440,7 @@ All environment-specific values in `src/lib/constants.js`:
 
 ---
 
-## 10. Dependencies (Exhaustive List)
+## 11. Dependencies (Exhaustive List)
 
 ### Runtime
 - **ethers** (v6): Contract interaction, ABI encoding
@@ -464,7 +463,7 @@ The only custom contract is the OTCZone (~150 lines), deployed once per chain. F
 
 ---
 
-## 11. Open Questions
+## 12. Open Questions
 
 1. ~~**URL length**~~: **Resolved** — URLs use the `#/swap/{chainId}/{txHash}` format, same as the current implementation. The signed order is stored on-chain in the `OrderRegistered` event and fetched via tx receipt.
 
