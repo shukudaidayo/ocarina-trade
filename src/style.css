@@ -39,6 +39,20 @@ code {
   word-break: break-all;
 }
 
+input[type="text"],
+input[type="number"],
+input[type="datetime-local"],
+textarea,
+select {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+}
+
 /* Layout */
 .app {
   min-height: 100vh;
@@ -57,6 +71,16 @@ header nav {
   gap: 1.5rem;
   max-width: 960px;
   margin: 0 auto;
+  overflow: hidden;
+}
+
+@media (max-width: 480px) {
+  header nav {
+    gap: 0.75rem;
+  }
+  header {
+    padding: 0.75rem 0.75rem;
+  }
 }
 
 .logo {
@@ -119,16 +143,18 @@ footer {
 .btn {
   display: inline-block;
   padding: 0.6rem 1.5rem;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--accent);
+  background: var(--bg-surface);
+  color: var(--text);
   font-size: 1rem;
   cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
 }
 
 .btn:hover {
-  background: var(--accent);
-  color: var(--bg);
+  border-color: var(--text-muted);
+  background: #252525;
   text-decoration: none;
 }
 
@@ -138,12 +164,12 @@ footer {
 }
 
 .btn-secondary:hover {
-  background: var(--bg-surface);
+  border-color: var(--text-muted);
   color: var(--text);
 }
 
-/* Swap page */
-.swap-status-bar {
+/* Trade page */
+.trade-status-bar {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -163,11 +189,10 @@ footer {
 .status-open { background: #1a3a1a; color: #4c4; }
 .status-filled { background: #1a2a3a; color: var(--accent); }
 .status-cancelled { background: #3a1a1a; color: #c44; }
-.status-none { background: var(--bg-surface); color: var(--text-muted); }
 .status-expired { background: #3a2a1a; color: #ca4; }
 .status-loading { color: var(--text-muted); font-size: 0.85rem; }
 
-.swap-parties {
+.trade-parties {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   gap: 1rem;
@@ -176,22 +201,22 @@ footer {
 }
 
 @media (max-width: 640px) {
-  .swap-parties {
+  .trade-parties {
     grid-template-columns: 1fr;
   }
-  .swap-arrow {
+  .trade-arrow {
     text-align: center;
   }
 }
 
-.swap-party {
+.trade-party {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem;
 }
 
-.swap-party h3 {
+.trade-party h3 {
   font-size: 0.9rem;
   color: var(--text-muted);
   margin-bottom: 0.5rem;
@@ -220,7 +245,7 @@ footer {
   text-transform: uppercase;
 }
 
-.swap-arrow {
+.trade-arrow {
   font-size: 1.5rem;
   color: var(--text-muted);
   padding-top: 2.5rem;
@@ -404,13 +429,13 @@ footer {
   font-size: 0.75rem;
 }
 
-.swap-meta {
+.trade-meta {
   margin-bottom: 1.5rem;
   font-size: 0.85rem;
   color: var(--text-muted);
 }
 
-.swap-meta p {
+.trade-meta p {
   margin-bottom: 0.3rem;
 }
 
@@ -446,31 +471,6 @@ footer {
   margin-top: 1rem;
 }
 
-.create-columns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2rem;
-  margin-bottom: 1.5rem;
-}
-
-@media (max-width: 640px) {
-  .create-columns {
-    grid-template-columns: 1fr;
-  }
-}
-
-.create-column h2 {
-  font-size: 1rem;
-  margin-bottom: 0.75rem;
-  color: var(--text-muted);
-}
-
-.create-options {
-  display: flex;
-  gap: 1.5rem;
-  margin-bottom: 1.5rem;
-  flex-wrap: wrap;
-}
 
 .form-field {
   flex: 1;
@@ -493,13 +493,6 @@ footer {
 .form-field textarea {
   resize: vertical;
   min-height: 2.5rem;
-  font-family: inherit;
-  font-size: inherit;
-  padding: 0.5rem 0.7rem;
-  background: var(--bg-input, var(--bg-secondary));
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 .char-count {
@@ -873,18 +866,7 @@ footer {
   margin-top: 0.3rem;
 }
 
-.offer-card-memo {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  margin-top: 0.3rem;
-  font-style: italic;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.swap-memo {
+.trade-memo {
   font-style: italic;
   unicode-bidi: plaintext;
   direction: ltr;
@@ -991,4 +973,653 @@ footer {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/* ── Homepage ──────────────────────────────────────────────── */
+
+.home-taker-form {
+  margin: 4rem auto 1.5rem;
+  max-width: 500px;
+  text-align: center;
+}
+
+.home-taker-form label {
+  display: block;
+  margin-bottom: 1.5rem;
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+.home-taker-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.home-taker-row input {
+  flex: 1;
+}
+
+.home-open-offer {
+  margin: 1rem 0 3rem;
+}
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font-size: inherit;
+  text-decoration: underline;
+}
+
+.btn-link:hover {
+  opacity: 0.8;
+}
+
+/* ── Wizard ────────────────────────────────────────────────── */
+
+.wizard {
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.wizard-steps {
+  display: flex;
+  justify-content: center;
+  gap: 0.25rem;
+  margin-bottom: 2rem;
+  padding: 0 1rem;
+}
+
+.wizard-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: none;
+  cursor: default;
+  padding: 0.25rem 0.5rem;
+  min-width: 0;
+}
+
+.wizard-step-complete {
+  cursor: pointer;
+}
+
+.wizard-step-complete:hover .wizard-step-dot {
+  background: var(--accent);
+}
+
+.wizard-step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background 0.2s;
+}
+
+.wizard-step-current .wizard-step-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3);
+}
+
+.wizard-step-complete .wizard-step-dot {
+  background: #4c4;
+}
+
+.wizard-step-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.wizard-step-current .wizard-step-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.wizard-content {
+  padding: 0 1rem;
+}
+
+.wizard-screen h2 {
+  margin-bottom: 1rem;
+}
+
+.wizard-screen-header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.wizard-footer {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  padding-bottom: 1rem;
+}
+
+.wizard-nav {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
+
+.wizard-connected {
+  margin-top: 1rem;
+}
+
+.wizard-connect-prompt {
+  margin-top: 1.5rem;
+  text-align: center;
+}
+
+.address-mono {
+  font-family: monospace;
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+/* ── Chain Select ──────────────────────────────────────────── */
+
+.chain-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.chain-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1.25rem;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary, var(--bg));
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.2s;
+}
+
+.chain-card:hover {
+  border-color: var(--accent);
+}
+
+.chain-card-active {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.chain-card-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.chain-card-desc {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* ── Asset Picker ──────────────────────────────────────────── */
+
+.asset-picker-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.asset-picker-filter {
+  width: 100%;
+  margin-bottom: 0.75rem;
+}
+
+/* NFT Grid */
+
+.nft-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 0.5rem;
+}
+
+.nft-grid-item {
+  display: flex;
+  flex-direction: column;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: none;
+  padding: 0;
+  text-align: left;
+  color: var(--text);
+  transition: border-color 0.2s;
+}
+
+.nft-grid-item:hover {
+  border-color: var(--accent);
+}
+
+.nft-grid-item-selected {
+  border-color: #4c4;
+  background: rgba(68, 204, 68, 0.05);
+}
+
+.nft-grid-item-spam {
+  opacity: 0.35;
+}
+
+.nft-grid-item-spam:hover {
+  opacity: 0.6;
+}
+
+.nft-grid-image {
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  position: relative;
+  background: var(--border);
+}
+
+.nft-grid-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.nft-grid-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: #4c4;
+  color: #000;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: bold;
+}
+
+.nft-grid-verified {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: #2081e2;
+  color: #fff;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: bold;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.nft-grid-label {
+  padding: 0.35rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-height: 0;
+}
+
+.nft-grid-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nft-grid-collection {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Collection drill-down */
+
+.collection-back {
+  margin-bottom: 0.5rem;
+}
+
+.collection-drill-title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+/* Quantity Picker */
+
+.quantity-picker {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.quantity-picker-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.quantity-picker-row input {
+  width: 80px;
+}
+
+/* Manual Entry */
+
+.manual-entry {
+  margin-top: 0.75rem;
+}
+
+.manual-entry-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.manual-entry-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+/* Cash Tab */
+
+.cash-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.cash-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  gap: 1rem;
+}
+
+.cash-row-disabled {
+  opacity: 0.4;
+}
+
+.cash-row-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.cash-row-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.cash-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.cash-row-symbol {
+  font-weight: 600;
+}
+
+.cash-row-balance {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.cash-row-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.cash-row-input input {
+  width: 120px;
+  text-align: right;
+}
+
+/* Asset Tally */
+
+.asset-tally {
+  font-size: 0.9rem;
+}
+
+.asset-tally.empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ── Review ────────────────────────────────────────────────── */
+
+.review-section {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.review-arrow {
+  display: flex;
+  align-items: center;
+  font-size: 1.5rem;
+  color: var(--text-muted);
+}
+
+.review-side h3 {
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.review-assets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.review-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.review-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.expiry-presets {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.expiry-custom {
+  margin-left: 0.25rem;
+}
+
+.review-memo {
+  margin-top: 0.5rem;
+}
+
+.review-memo textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+}
+
+.memo-warning {
+  font-size: 0.8rem;
+  color: #ca4;
+  margin-bottom: 0.5rem;
+}
+
+/* ── Execute ───────────────────────────────────────────────── */
+
+.execute-summary {
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.execute-error {
+  margin-top: 1rem;
+}
+
+/* ── Done ──────────────────────────────────────────────────── */
+
+.wizard-done {
+  text-align: center;
+}
+
+.done-check {
+  font-size: 3rem;
+  color: #4c4;
+  margin-bottom: 0.5rem;
+}
+
+.done-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 1.5rem 0;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+
+.done-link code {
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.done-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  margin-top: 1rem;
+}
+
+/* ── Taker Subtitle ────────────────────────────────────────── */
+
+.taker-subtitle {
+  margin-top: -0.5rem;
+  margin-bottom: 0.75rem;
+  color: var(--text);
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.taker-display {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 0.25rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.btn-icon:hover {
+  color: var(--text);
+}
+
+.inline-taker-edit {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.taker-label {
+  white-space: nowrap;
+}
+
+.inline-taker-edit input {
+  min-width: 250px;
+}
+
+/* ── Responsive ────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .wizard-step-label {
+    display: none;
+  }
+
+  .wizard-step-current .wizard-step-label {
+    display: block;
+  }
+
+  .wizard-step-dot {
+    width: 8px;
+    height: 8px;
+  }
+
+  .wizard-steps {
+    gap: 0.75rem;
+  }
+
+  .review-section {
+    grid-template-columns: 1fr;
+  }
+
+  .review-arrow {
+    justify-content: center;
+  }
+
+  .nft-grid {
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  }
+
+  .home-taker-row {
+    flex-direction: column;
+  }
+
+  .inline-taker-edit {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .inline-taker-edit input {
+    min-width: 0;
+  }
 }

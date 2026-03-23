@@ -2,11 +2,11 @@
 
 ## 1. Overview
 
-A peer-to-peer swap website for trading NFTs (and whitelisted ERC-20s) directly between two parties. Uses OpenSea's **Seaport protocol** as the on-chain settlement layer, with a minimal custom **OTCZone** contract for taker restriction, ERC-20 whitelisting, and order discovery. No backend, no database, no accounts.
+A peer-to-peer trade website for trading NFTs (and whitelisted ERC-20s) directly between two parties. Uses OpenSea's **Seaport protocol** as the on-chain settlement layer, with a minimal custom **OTCZone** contract for taker restriction, ERC-20 whitelisting, and order discovery. No backend, no database, no accounts.
 
 ### Motivation
 
-Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simple, durable swap tool. This project prioritizes **longevity** and **minimal maintenance** over feature richness.
+Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simple, durable trade tool. This project prioritizes **longevity** and **minimal maintenance** over feature richness.
 
 ### Why Seaport
 
@@ -29,7 +29,7 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 
 - **Chains**: Ethereum, Base, Polygon
 - **Token types**: ERC-721, ERC-1155, ERC-20 (whitelisted only), and native ETH (taker side only — Seaport requires the caller to provide ETH via `msg.value`, so the maker cannot offer native ETH in a standard `fulfillOrder` flow)
-- **Swap structure**: Multi-asset <-> multi-asset (each side can have 1+ items)
+- **Trade structure**: Multi-asset <-> multi-asset (each side can have 1+ items)
 - **Counterparty**: Optionally restricted to a specific address, or open to anyone
 - **Expiration**: Required (default 30 days, configurable in UI)
 - **Memo**: Optional short message (max 280 bytes) attached to the order at registration
@@ -75,9 +75,9 @@ OfferItem / ConsiderationItem {
 }
 ```
 
-#### How Our Swaps Map to Seaport
+#### How Our Trades Map to Seaport
 
-For a simple NFT-for-NFT swap:
+For a simple NFT-for-NFT trade:
 
 1. **Maker creates an order off-chain:**
    - `offer`: The NFTs/tokens the maker is giving
@@ -91,7 +91,7 @@ For a simple NFT-for-NFT swap:
 
 3. **Maker shares a URL** containing the signed order.
 
-4. **Taker opens the URL**, reviews the swap, approves their assets to Seaport, and calls `fulfillOrder()` — one on-chain transaction that atomically swaps all assets.
+4. **Taker opens the URL**, reviews the trade, approves their assets to Seaport, and calls `fulfillOrder()` — one on-chain transaction that atomically exchanges all assets.
 
 #### Taker Restriction
 
@@ -129,7 +129,7 @@ ERC-20 enforcement happens at three layers:
 - **Registration**: `registerOrder` reverts if the order contains a non-whitelisted ERC-20.
 - **Fulfillment**: `validateOrder` reverts if Seaport tries to settle an order with a non-whitelisted ERC-20.
 
-The `orderURI` field stores the base64-encoded signed order, so the frontend can reconstruct the swap page from the event alone. The `memo` field is emitted in the `OrderRegistered` event and displayed on the swap and offers pages when present.
+The `orderURI` field stores the base64-encoded signed order, so the frontend can reconstruct the trade page from the event alone. The `memo` field is emitted in the `OrderRegistered` event and displayed on the trade detail page when present (not on offer cards, to keep the browse layout clean).
 
 **Note:** Seaport also allows the offerer to cancel by incrementing their counter (bulk cancel) or cancelling specific orders on-chain.
 
@@ -161,8 +161,8 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 - **Web3**: ethers.js v6
 - **Wallet connection**: Reown AppKit (WalletConnect + injected providers)
 - **Styling**: Minimal custom CSS. No CSS framework.
-- **NFT data**: Alchemy Portfolio API (wallet NFT enumeration + metadata)
-- **NFT metadata fallback**: On-chain tokenURI + IPFS/HTTP/Arweave resolution
+- **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection.
+- **NFT metadata**: On-chain tokenURI + IPFS/HTTP/Arweave resolution, with Alchemy `getNFTMetadata` as fallback when on-chain resolution fails
 - **ENS**: Forward resolution (name → address) for taker input, reverse resolution (address → name) for display throughout the UI. Uses mainnet provider since ENS lives on L1.
 - **Build**: Vite
 - **Hosting**: Static site (GitHub Pages, Cloudflare Pages, or IPFS)
@@ -172,26 +172,23 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 Hash-based routing (works on static hosts, no server config needed).
 
 1. **`#/`** - Home / landing page
-   - Brief explanation of what the site does
-   - "Create Swap" button
+   - Taker address input ("Who are you trading with?") with ENS resolution
+   - "Or make an open offer anyone can accept" link
+   - "Browse Offers" link
+   - No wallet connection UI on this page
 
-2. **`#/create`** - Create a new swap offer
-   - Two columns: "You Send" and "You Receive"
-   - Each column: add/remove assets (token address + token ID, or ERC-20 amount)
-   - **NFT picker**: "Pick from wallet" button on each side opens a modal grid of NFTs. On the "You Send" side, fetches the connected wallet's NFTs. On the "You Receive" side, fetches the taker's NFTs (grayed out if no taker address is entered; debounce on address input). Uses Alchemy Portfolio API (`POST /data/v1/{apiKey}/assets/nfts/by-address`). Spam NFTs excluded via `excludeFilters: ["SPAM"]`. ERC-1155 tokens with balance > 1 show a quantity picker. Manual entry remains as fallback.
-   - Optional: taker address field (with ENS resolution)
-   - Expiration (default 30 days)
-   - Optional memo (max 280 bytes) — stored on-chain in the `OrderRegistered` event
-   - Asset preview with NFT metadata and verification status
-   - Click "Create Swap" → approve assets → sign EIP-712 order → register on-chain → generate shareable link
+2. **`#/create`** - Create a new trade offer (multi-step wizard)
+   - Guided wizard flow: Connect → Chain → You Offer → You Want → Review → Submit → Done
+   - Step indicator across the top (completed steps clickable, future steps dimmed, all green on success)
+   - Full details in `SPEC-CREATE-FLOW.md`
 
-3. **`#/swap/{chainId}/{txHash}`** - View and accept a swap
+3. **`#/trade/{chainId}/{txHash}`** - View and accept a trade
    - Fetch `OrderRegistered` event from the registration tx receipt
    - Extract signed order from `orderURI` field
    - Display both sides with NFT previews and verification warnings
-   - Display memo (if present) in the swap metadata section
+   - Display memo (if present) in the trade metadata section
    - Validate order on-chain via Seaport `getOrderStatus` (check if filled/cancelled)
-   - If valid and user is eligible: approval flow + "Accept Swap" button
+   - If valid and user is eligible: approval flow + "Accept Trade" button
    - If user is maker: "Cancel" button
    - Anti-scam education banner (non-dismissable)
 
@@ -201,19 +198,19 @@ Hash-based routing (works on static hosts, no server config needed).
    - "All Open" tab: paginated, all open orders
    - "Completed" tab: filled orders
    - Populated by querying `OrderRegistered` events from OTCZone, cross-referenced with Seaport for order status (filled/cancelled)
-   - Memos are not displayed on offer cards (removed — broke card layout). Memos are visible on the swap detail page only.
+   - Memos are not displayed on offer cards (removed — broke card layout). Memos are visible on the trade detail page only.
 
 #### URL Encoding
 
 Since the signed order is stored on-chain in the `OrderRegistered` event, the URL only needs the chain ID and the registration transaction hash:
 
 ```
-#/swap/{chainId}/{txHash}
+#/trade/{chainId}/{txHash}
 ```
 
-Example: `#/swap/1/0x7bd391346f238fc36c19291a1f9678773ca5a47a475814592194802cbec983cb`
+Example: `#/trade/1/0x7bd391346f238fc36c19291a1f9678773ca5a47a475814592194802cbec983cb`
 
-The swap page fetches the tx receipt, parses the `OrderRegistered` event to extract the full signed order, and has everything needed to display the swap and call `fulfillOrder`. This is the same pattern used in the current implementation — short, clean URLs with on-chain data retrieval.
+The trade page fetches the tx receipt, parses the `OrderRegistered` event to extract the full signed order, and has everything needed to display the trade and call `fulfillOrder`. This is the same pattern used in the current implementation — short, clean URLs with on-chain data retrieval.
 
 #### Order Discovery / Offers Page
 
@@ -221,9 +218,9 @@ The OTCZone contract emits `OrderRegistered` events when makers publish their or
 
 - **My Offers**: Filter `OrderRegistered` events where `maker` or `taker` matches the connected wallet.
 - **All Open**: All `OrderRegistered` events, filtered client-side to exclude filled/cancelled/expired orders. Paginated.
-- **Completed**: Cross-reference with Seaport `OrderFulfilled` events.
+- **Completed**: Cross-referenced with Seaport `getOrderStatus` (checks `totalFilled === totalSize`).
 
-Each `OrderRegistered` event contains the `orderURI`, which has everything needed to reconstruct the swap page link.
+Each `OrderRegistered` event contains the `orderURI`, which has everything needed to reconstruct the trade page link.
 
 ---
 
@@ -291,14 +288,24 @@ Key points:
 - Verified / Unverified / Suspicious indicators per token
 - Impostor detection (same name, different address)
 - Full contract addresses always visible, linked to Etherscan
-- Non-dismissable education banner on swap page
+- Non-dismissable education banner on trade page
 - ERC-20 whitelist enforced at three layers (frontend, registration, fulfillment) — prevents impostor token scams
+
+### Spam NFT Detection
+
+The asset picker hides spam collections behind a "Show Potential Spam" toggle. Spam detection uses a hybrid approach:
+
+1. **Alchemy `isSpam` flag**: The `getContractsForOwner` API returns an `isSpam` flag per contract, used as the primary signal.
+2. **Heuristic name patterns**: ~20 regex patterns detect common spam indicators in collection names: URLs, claim/reward bait, unicode emoji, dollar amounts, protocol impersonation, fake events, bare EVM addresses, etc. Applied to collections not already flagged by the API.
+3. **OpenSea verification override**: Collections with `safelistRequestStatus` of `verified` or `approved` always override spam flags, preventing false positives on legitimate verified collections.
+
+The picker auto-fetches pages until 50 non-spam collections are loaded (or the wallet is exhausted). Spam collections are accessible via the toggle but hidden by default.
 
 ### Holdings Verification
 
-The swap page and offers page perform on-chain balance checks to verify that parties actually hold the assets in an order. This prevents users from attempting swaps that will revert.
+The trade page and offers page perform on-chain balance checks to verify that parties actually hold the assets in an order. This prevents users from attempting trades that will revert.
 
-- **Swap page**: Checks maker's holdings (offer items) and taker's holdings (consideration items) via direct contract calls (`ownerOf` for ERC-721, `balanceOf` for ERC-1155/ERC-20, `provider.getBalance` for native ETH). Missing assets are flagged per-item, and the Accept button is disabled if either side is missing assets.
+- **Trade page**: Checks maker's holdings (offer items) and taker's holdings (consideration items) via direct contract calls (`ownerOf` for ERC-721, `balanceOf` for ERC-1155/ERC-20, `provider.getBalance` for native ETH). Missing assets are flagged per-item, and the Accept button is disabled if either side is missing assets.
 - **Offers page**: Checks maker holdings for all open offers. Orders where the maker no longer holds assets are sorted to the bottom and visually dimmed.
 - **Error priority**: Wrong-taker errors take precedence over holdings errors, which take precedence over the Accept button.
 
@@ -310,7 +317,7 @@ The memo field is stored permanently in on-chain event logs and cannot be delete
 
 - **Plain text only.** React's default text rendering escapes HTML/script injection. Never use `dangerouslySetInnerHTML` on memos.
 - **No auto-linking.** URLs in memos are displayed as plain text, not clickable links. Prevents phishing.
-- **Swap page only.** Memos are only displayed on the swap detail page, not on offer cards in the browse view.
+- **Trade page only.** Memos are only displayed on the trade detail page, not on offer cards in the browse view.
 - **CSS `unicode-bidi: plaintext` + `direction: ltr`** on memo elements to neutralize RTL override and homograph attacks.
 
 If abuse occurs post-launch, additional mitigations available without contract changes:
@@ -323,30 +330,34 @@ If abuse occurs post-launch, additional mitigations available without contract c
 
 ## 6. NFT Metadata Resolution
 
-Unchanged from original spec. See section 5 of the original SPEC.md.
+Three-tier resolution strategy:
 
-- On-chain tokenURI/uri call → IPFS/HTTP/data URI/Arweave (`ar://`) resolution
-- sessionStorage cache
+1. **Alchemy cache**: During the create flow, the asset picker fetches NFT images/names from the Alchemy v3 API. These are attached to the asset object (`_image`, `_name`) and carried through to the review/execute screens without re-fetching.
+2. **On-chain tokenURI**: For contexts without Alchemy data (trade page, offers page), fetch `tokenURI` (ERC-721) or `uri` (ERC-1155) from the contract, then resolve IPFS/HTTP/data URI/Arweave (`ar://`) to fetch JSON metadata.
+3. **Alchemy getNFTMetadata fallback**: If on-chain resolution fails or returns no image, fall back to Alchemy's `getNFTMetadata` v3 endpoint for cached metadata.
+
+All results cached in `sessionStorage` to avoid redundant fetches.
 
 ---
 
 ## 7. User Flow
 
-### Creating a Swap
+### Creating a Trade
 
-1. User connects wallet
-2. Navigates to Create page
-3. Adds assets they want to send (contract address + token ID, or ERC-20 amount)
-4. Adds assets they want to receive
-5. Optionally sets taker address, expiration, and memo
-6. Clicks "Create Swap"
-7. UI checks and requests approvals for maker's assets to Seaport (gas, per collection)
-8. UI constructs Seaport order and prompts EIP-712 signature (**no gas**)
-9. UI calls `registerOrder` on OTCZone to publish the order for discovery (gas, cheap)
-10. UI generates shareable link containing the signed order
-11. User copies link and sends to counterparty
+1. User enters counterparty address (or ENS name) on the homepage, or chooses "open offer"
+2. Connects wallet (auto-skipped if already connected)
+3. Selects chain (Ethereum / Base / Polygon) — triggers wallet network switch
+4. Selects assets to offer from wallet (collectibles grid + cash list, with search/filter and manual entry fallback)
+5. Selects assets wanted in return (from taker's wallet if directed, or manual entry if open)
+6. Reviews summary: both sides, expiration (default 30 days, configurable), optional memo (max 280 bytes)
+7. Clicks "Confirm" → execute screen walks through steps:
+   a. Approval steps — one per unique token contract (gas, per collection)
+   b. Sign order — EIP-712 signature (**no gas**)
+   c. Register order — `registerOrder` on OTCZone (gas, cheap)
+8. Success screen shows shareable link
+9. User copies link and sends to counterparty
 
-### Accepting a Swap
+### Accepting a Trade
 
 1. Counterparty opens the shared link
 2. UI fetches `OrderRegistered` event from the registration tx receipt and extracts the signed order
@@ -356,13 +367,13 @@ Unchanged from original spec. See section 5 of the original SPEC.md.
 6. Counterparty reviews the trade
 7. Connects wallet
 8. UI shows a step-by-step checklist: one step per token approval, plus the final fulfillment action. Each step shows status (pending → signing → confirming → done/failed).
-9. Clicks "Accept Swap"
-10. UI walks through approval steps, then calls `fulfillOrder` — one transaction, atomic swap
+9. Clicks "Accept Trade"
+10. UI walks through approval steps, then calls `fulfillOrder` — one transaction, atomic trade
 11. Assets are exchanged
 
-### Cancelling a Swap
+### Cancelling a Trade
 
-1. Maker opens the swap link (or navigates from My Offers)
+1. Maker opens the trade link (or navigates from My Offers)
 2. Clicks "Cancel"
 3. UI calls `seaport.cancel([orderComponents])` — one on-chain tx
 4. Order is cancelled on-chain
@@ -414,14 +425,14 @@ All contracts deployed via CREATE2 (Nick's Factory at `0x4e59b44847b379578588920
 
 ### Farcaster / Base App Mini-Apps
 - The site's architecture (no backend, hash routing, standard EIP-1193 wallet interface) is compatible with mini-app embedding.
-- Main work: detect mini-app context and swap the wallet provider (Farcaster SDK or Coinbase Wallet SDK instead of Reown AppKit). Everything downstream (ethers.js, Seaport calls) stays the same.
+- Main work: detect mini-app context and replace the wallet provider (Farcaster SDK or Coinbase Wallet SDK instead of Reown AppKit). Everything downstream (ethers.js, Seaport calls) stays the same.
 - Requires a separate OTCZone deployment per chain (already done for Base and Polygon).
 
 ### Not Planned
 - Order book / listing marketplace
 - Chat / messaging
 - Mobile app (responsive web is sufficient)
-- Cross-chain swaps (fundamentally different mechanism)
+- Cross-chain trades (fundamentally different mechanism)
 
 ---
 
@@ -448,7 +459,7 @@ Alchemy-specific config lives in `src/lib/alchemy.js`:
 
 ### External Services
 - **Reown AppKit**: Wallet connection (requires project ID via `VITE_REOWN_PROJECT_ID`)
-- **Alchemy Portfolio API**: NFT enumeration and metadata for the wallet picker (requires API key via `VITE_ALCHEMY_API_KEY`). The app remains functional without it — manual asset entry is always available as a fallback.
+- **Alchemy NFT v3 API**: Collection enumeration (`getContractsForOwner`, includes `isSpam` flag for spam detection) and per-collection NFT fetching (`getNFTsForOwner`) for the wallet picker, plus single-NFT metadata fallback (`getNFTMetadata`) on the trade page (requires API key via `VITE_ALCHEMY_API_KEY`). The app remains functional without it — manual asset entry is always available as a fallback.
 - **Blockchain data**: Public RPC endpoints
 - **NFT metadata fallback**: On-chain tokenURI + public IPFS gateways
 - **Hosting**: Any static file host
@@ -481,7 +492,7 @@ The only custom contract is the OTCZone (~135 lines), deployed once per chain. F
 
 ## 12. Open Questions
 
-1. ~~**URL length**~~: **Resolved** — URLs use the `#/swap/{chainId}/{txHash}` format, same as the current implementation. The signed order is stored on-chain in the `OrderRegistered` event and fetched via tx receipt.
+1. ~~**URL length**~~: **Resolved** — URLs use the `#/trade/{chainId}/{txHash}` format, same as the current implementation. The signed order is stored on-chain in the `OrderRegistered` event and fetched via tx receipt.
 
 2. ~~**Offers page without events**~~: **Resolved** — the OTCZone contract emits `OrderRegistered` events, providing an on-chain index of published orders. The offers page queries these events and cross-references with Seaport for order status.
 

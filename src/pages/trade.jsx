@@ -15,7 +15,7 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 // Known Seaport/Zone error selectors
 const KNOWN_ERRORS = {
-  '0x82b42900': 'You are not the authorized taker for this swap.',
+  '0x82b42900': 'You are not the authorized taker for this trade.',
   '0x98d4901c': 'This order has been cancelled.',
 }
 
@@ -27,7 +27,7 @@ function friendlyFillError(err) {
   }
   // Seaport reverts with generic data when token transfers fail
   if (raw.includes('execution reverted') || err.code === 'CALL_EXCEPTION') {
-    return 'This swap cannot be completed. The maker may no longer hold the offered assets, or approvals may have been revoked.'
+    return 'This trade cannot be completed. The maker may no longer hold the offered assets, or approvals may have been revoked.'
   }
   if (err.code === 'ACTION_REJECTED' || raw.includes('user rejected')) {
     return 'Transaction rejected by user.'
@@ -35,7 +35,7 @@ function friendlyFillError(err) {
   return err.reason || err.message || 'Transaction failed'
 }
 
-export default function Swap() {
+export default function Trade() {
   const { chainId, txHash } = useParams()
   const wallet = useOutletContext()
 
@@ -58,13 +58,6 @@ export default function Swap() {
         const data = await getOrderFromTx(Number(chainId), txHash)
         if (cancelled) return
         setOrderData(data)
-
-        const status = await getOrderStatus(Number(chainId), data.orderHash)
-        if (!cancelled) {
-          const endTime = data.order.parameters.endTime
-          setStatusLabel(deriveOrderStatus(status, endTime))
-          setStatusLoading(false)
-        }
       } catch (err) {
         console.error('Failed to load order:', err)
         if (!cancelled) {
@@ -76,6 +69,28 @@ export default function Swap() {
     load()
     return () => { cancelled = true }
   }, [chainId, txHash])
+
+  // Fetch order status separately so a transient RPC failure doesn't destroy loaded order data
+  useEffect(() => {
+    if (!orderData) return
+    let cancelled = false
+    async function load() {
+      try {
+        const status = await getOrderStatus(Number(chainId), orderData.orderHash)
+        if (!cancelled) {
+          const endTime = orderData.order.parameters.endTime
+          setStatusLabel(deriveOrderStatus(status, endTime))
+        }
+      } catch (err) {
+        console.error('Failed to load order status:', err)
+        // Still show the order — just without status
+      } finally {
+        if (!cancelled) setStatusLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [orderData, chainId])
 
   // Check holdings when order is loaded and open
   useEffect(() => {
@@ -125,7 +140,7 @@ export default function Swap() {
       }
     })
 
-    const txSteps = buildSteps(takerAssets, 'Accept Swap')
+    const txSteps = buildSteps(takerAssets, 'Accept Trade')
     setSteps(txSteps)
 
     function updateStep(index, update) {
@@ -213,14 +228,14 @@ export default function Swap() {
 
   if (loadError) {
     return (
-      <div className="page swap">
-        <h1>Invalid Swap</h1>
+      <div className="page trade">
+        <h1>Invalid Trade</h1>
         <p className="form-error">{loadError}</p>
       </div>
     )
   }
 
-  if (!orderData) return <div className="page swap"><p className="text-muted">Loading order...</p></div>
+  if (!orderData) return <div className="page trade"><p className="text-muted">Loading order...</p></div>
 
   const params = orderData.order.parameters
   const maker = params.offerer
@@ -261,12 +276,12 @@ export default function Swap() {
   }))
 
   return (
-    <div className="page swap">
-      <h1>Swap Details</h1>
+    <div className="page trade">
+      <h1>Trade Details</h1>
 
       <WarningBanner />
 
-      <div className="swap-status-bar">
+      <div className="trade-status-bar">
         {statusLoading ? (
           <span className="status-loading">Loading status...</span>
         ) : (
@@ -279,8 +294,8 @@ export default function Swap() {
         </button>
       </div>
 
-      <div className="swap-parties">
-        <div className="swap-party">
+      <div className="trade-parties">
+        <div className="trade-party">
           <h3>Maker sends</h3>
           <p className="party-address">
             <AddressDisplay address={maker} chainId={Number(chainId)} showFull />
@@ -288,8 +303,8 @@ export default function Swap() {
           </p>
           <AssetList assets={offerAssets} chainId={chainId} holdings={offerHoldings} holdingsLabel="Maker" />
         </div>
-        <div className="swap-arrow">&#8644;</div>
-        <div className="swap-party">
+        <div className="trade-arrow">&#8644;</div>
+        <div className="trade-party">
           <h3>Taker sends</h3>
           <p className="party-address">
             {taker === ZERO_ADDRESS ? (
@@ -305,9 +320,9 @@ export default function Swap() {
         </div>
       </div>
 
-      <div className="swap-meta">
+      <div className="trade-meta">
         {orderData.memo && (
-          <p className="swap-memo">
+          <p className="trade-memo">
             <span className="meta-label">Memo:</span> {orderData.memo}
           </p>
         )}
@@ -327,15 +342,15 @@ export default function Swap() {
       <TxChecklist steps={steps} />
 
       {!wallet && isOpen && (
-        <p className="text-muted">Connect your wallet to accept or cancel this swap.</p>
+        <p className="text-muted">Connect your wallet to accept or cancel this trade.</p>
       )}
 
       {wallet && wrongChain && (
-        <p className="form-error">Switch your wallet to chain {chainId} to interact with this swap.</p>
+        <p className="form-error">Switch your wallet to chain {chainId} to interact with this trade.</p>
       )}
 
       {wallet && !wrongChain && isOpen && !isExpired && wrongTaker && !isMaker && (
-        <p className="form-error">This swap is restricted to a specific taker. Your connected wallet is not the authorized taker.</p>
+        <p className="form-error">This trade is restricted to a specific taker. Your connected wallet is not the authorized taker.</p>
       )}
 
       {wallet && !wrongChain && isOpen && !isExpired && isTaker && !isMaker && (() => {
@@ -345,13 +360,13 @@ export default function Swap() {
         return (
           <>
             {makerMissing && (
-              <p className="form-error">This swap cannot be completed — the maker no longer holds all offered assets.</p>
+              <p className="form-error">This trade cannot be completed — the maker no longer holds all offered assets.</p>
             )}
             {takerMissing && (
-              <p className="form-error">You do not hold all required assets to accept this swap.</p>
+              <p className="form-error">You do not hold all required assets to accept this trade.</p>
             )}
             <button className="btn btn-primary" onClick={handleFill} disabled={submitting || blocked}>
-              {submitting ? 'Accepting...' : 'Accept Swap'}
+              {submitting ? 'Accepting...' : 'Accept Trade'}
             </button>
           </>
         )
@@ -359,7 +374,7 @@ export default function Swap() {
 
       {wallet && !wrongChain && isOpen && isMaker && (
         <button className="btn btn-cancel" onClick={handleCancel} disabled={submitting}>
-          {submitting ? 'Cancelling...' : 'Cancel Swap'}
+          {submitting ? 'Cancelling...' : 'Cancel Trade'}
         </button>
       )}
     </div>
@@ -373,7 +388,7 @@ function AssetList({ assets, chainId, holdings, holdingsLabel }) {
         <div key={i}>
           <AssetCard asset={asset} chainId={Number(chainId)} />
           {holdings && !holdings[i]?.held && (
-            <p className="asset-missing">{holdingsLabel} does not hold this asset</p>
+            <p className="asset-missing">{holdingsLabel} {holdingsLabel === 'You' ? 'do' : 'does'} not hold this asset</p>
           )}
         </div>
       ))}

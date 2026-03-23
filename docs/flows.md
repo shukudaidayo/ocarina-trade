@@ -28,10 +28,10 @@ sequenceDiagram
     Z->>Z: emit OrderRegistered(orderHash, maker, taker, orderURI)
     Z-->>F: Tx receipt
 
-    F->>F: Navigate to #/swap/{chainId}/{txHash}
+    F->>F: Navigate to #/trade/{chainId}/{txHash}
 ```
 
-## View Swap (Load from URL)
+## View Trade (Load from URL)
 
 ```mermaid
 sequenceDiagram
@@ -49,7 +49,7 @@ sequenceDiagram
     S-->>F: { isCancelled, totalFilled, totalSize }
 
     F->>F: Derive status (open / filled / cancelled / expired)
-    F->>F: Display swap details
+    F->>F: Display trade details
 ```
 
 ## Accept (Fill) Order

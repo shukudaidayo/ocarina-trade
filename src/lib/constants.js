@@ -1,9 +1,9 @@
 export const IPFS_GATEWAY = 'https://ipfs.io/ipfs/'
 
 export const CHAINS = {
-  1: { name: 'Ethereum', rpcUrl: 'https://ethereum-rpc.publicnode.com' },
-  8453: { name: 'Base', rpcUrl: 'https://base-rpc.publicnode.com' },
-  137: { name: 'Polygon', rpcUrl: 'https://polygon-bor-rpc.publicnode.com' },
+  1: { name: 'Ethereum', nativeSymbol: 'ETH', rpcUrl: 'https://ethereum-rpc.publicnode.com', blockscoutApi: 'https://eth.blockscout.com/api' },
+  8453: { name: 'Base', nativeSymbol: 'ETH', rpcUrl: 'https://base-rpc.publicnode.com', blockscoutApi: 'https://base.blockscout.com/api' },
+  137: { name: 'Polygon', nativeSymbol: 'POL', rpcUrl: 'https://polygon-bor-rpc.publicnode.com', blockscoutApi: 'https://polygon.blockscout.com/api' },
 }
 
 // Seaport 1.6 canonical address (same on all chains)

@@ -1,0 +1,812 @@
+import { useState, useEffect, useCallback } from 'react'
+import { fetchCollections, fetchNFTsForContract } from '../../lib/alchemy'
+import { fetchMetadata } from '../../lib/metadata'
+import { WHITELISTED_ERC20, CHAINS } from '../../lib/constants'
+import { Contract, JsonRpcProvider, formatUnits } from 'ethers'
+
+const ERC20_ABI = ['function balanceOf(address account) view returns (uint256)']
+
+// Patterns that strongly indicate spam NFT collections
+const SPAM_PATTERNS = [
+  // URLs in names (e.g. "blazeETH.com", "layerzero.pl", "daoevent_com")
+  /\b[a-z0-9-]+\.(com|net|org|io|xyz|co|cc|gg|me|pro|site|club|app|win|top|vip|fun|click|link|shop|trade|us|pl|lat|gift|finance|info)\b/i,
+  /_(com|net|org|io|xyz)\b/i,
+  // URL shorteners and telegram links
+  /\bt\.ly\/|t\.me\/|bit\.ly\/|tinyurl\./i,
+  // Claim/reward/gift bait language
+  /\b(claim|reward|voucher|airdrop|free mint|activate|visit\s|eligible|bonus|lottery|giveaway|whitelist|invite)\b/i,
+  // Unicode bait emojis (✅, ❗, 💰, etc.)
+  /[✅❗⚡️🎁💰🔥⭐️🎉❓✔️↪️]/,
+  // Dollar sign before or after numbers ("$5000", "2000$ USDC", "$PENDLE")
+  /\$\s?\d|\d+\s?\$/,
+  // Token/crypto amounts ("5000 BUSD", "700M SHIB", "1 stETH", "1.2827 cbETH")
+  /\b\d[\d,.]*[MKB]?\s+(USD|ETH|MATIC|USDC|USDT|BUSD|SHIB|UNI|COMP|stETH|cbETH|BRETT|PENDLE|DEGEN|CAKE)\b/i,
+  // "$TOKEN" pattern in collection names (e.g. "1.000.000 $PENDLE")
+  /\$[A-Z]{2,}/,
+  // Fake amounts with letter O instead of 0 ("5O,OOO USD")
+  /\d+O[,.]?O+/,
+  // "X by Y" where Y is a known protocol (fake airdrops: "5 ETH by Base")
+  /\bby\s+(Base|Uniswap|Lido|Optimism|Arbitrum|Aave|Compound)\b/i,
+  // Exclamation-heavy spam ("!!! 250 COMP", "!STOLEN CRYPTO")
+  /^!+\s*[A-Z0-9]/,
+  // NFT TICKETS pattern
+  /\bNFT\s+(TICKET|TICKETS)\b/i,
+  // "FOR FREE" bait
+  /\bFOR\s+FREE\b/i,
+  // QR code scams
+  /\bQR\b/i,
+  // Fake protocol events ("dYdX Event", "Uniswap NFT Event", "BLUR EVENT")
+  /\b(Exchange|Token|NFT|Summer|Plus)?\s*Event\b/i,
+  // Scare tactics ("AML high risk", "STOLEN CRYPTO")
+  /\b(AML|STOLEN|BLOCKED|FROZEN|RISK)\b/i,
+  // "Unidentified contract" or bare EVM address as name
+  /^Unidentified contract\b/,
+  /^0x[0-9a-fA-F]{40}$/,
+  // Impersonation of blue-chip collections (exact name + token ID pattern)
+  /^CryptoPunk #\d+$/,
+  // Fake protocol branding + whitelist/invite
+  /\b(LIDO|OPTIMISM|ARBITRUM)\s+(WHITELIST|NFT)\b/i,
+  // "FREESPIN" / free spin gambling bait
+  /\bFREE\s?SPIN\b/i,
+]
+
+/**
+ * Heuristic spam detection based on collection name patterns.
+ * Only applied to unverified collections. Conservative to avoid false positives.
+ */
+function looksLikeSpam(name) {
+  if (!name) return false
+  return SPAM_PATTERNS.some((re) => re.test(name))
+}
+
+/**
+ * Normalize a collection from the getContractsForOwner API response.
+ * Applies heuristic spam detection on top of the API's isSpam flag.
+ */
+function normalizeCollection(col) {
+  const isVerified = col.safelistStatus === 'verified' || col.safelistStatus === 'approved'
+  let isSpam = col.isSpam || false
+  // Verified collections are never spam; heuristic catches what API misses
+  if (isVerified) {
+    isSpam = false
+  } else if (!isSpam && looksLikeSpam(col.name)) {
+    isSpam = true
+  }
+  return {
+    name: col.name || col.address.slice(0, 6) + '...' + col.address.slice(-4),
+    thumbnail: col.image || col.collectionImage || null,
+    tokenType: col.tokenType,
+    tokenCount: col.numDistinctTokensOwned,
+    totalBalance: col.totalBalance,
+    isSpam,
+    isVerified,
+  }
+}
+
+/**
+ * Sort collection entries: verified first, then named, then unnamed.
+ */
+function sortCollectionEntries(entries) {
+  return entries.sort(([, a], [, b]) => {
+    const scoreA = a.isVerified ? 0 : (a.name && !a.name.includes('...')) ? 1 : 2
+    const scoreB = b.isVerified ? 0 : (b.name && !b.name.includes('...')) ? 1 : 2
+    return scoreA - scoreB
+  })
+}
+
+/**
+ * Asset picker with Collectibles and Cash tabs.
+ * Supports multi-select for NFTs and amount entry for ERC-20s.
+ *
+ * Props:
+ *   address     — wallet address to enumerate holdings for
+ *   chainId     — chain to query
+ *   selected    — current array of selected assets
+ *   onChange    — called with updated array
+ *   showNative  — whether to show native ETH in cash tab (taker side only)
+ *   isOwnWallet — true if this is the connected user's wallet (for loading NFTs)
+ */
+export default function AssetPicker({ address, chainId, selected, onChange, showNative = false, isOwnWallet = true, dimZeroBalance = true, backRef }) {
+  const [tab, setTab] = useState('collectibles')
+
+  return (
+    <div className="asset-picker">
+      <div className="asset-picker-tabs">
+        <button
+          type="button"
+          className={`tab${tab === 'collectibles' ? ' active' : ''}`}
+          onClick={() => setTab('collectibles')}
+        >
+          Collectibles
+        </button>
+        <button
+          type="button"
+          className={`tab${tab === 'cash' ? ' active' : ''}`}
+          onClick={() => setTab('cash')}
+        >
+          Cash
+        </button>
+      </div>
+
+      {tab === 'collectibles' && (
+        <CollectiblesTab
+          address={address}
+          chainId={chainId}
+          selected={selected}
+          onChange={onChange}
+          isOwnWallet={isOwnWallet}
+          backRef={backRef}
+        />
+      )}
+      {tab === 'cash' && (
+        <CashTab
+          address={address}
+          chainId={chainId}
+          selected={selected}
+          onChange={onChange}
+          showNative={showNative}
+          isOwnWallet={isOwnWallet}
+          dimZeroBalance={dimZeroBalance}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Collectibles Tab ──────────────────────────────────────────────
+
+function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, backRef }) {
+  const [collections, setCollections] = useState({}) // { contractAddr: normalizedCol }
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [pageKey, setPageKey] = useState(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [paginationBroken, setPaginationBroken] = useState(false)
+  const [filter, setFilter] = useState('')
+  const [showManual, setShowManual] = useState(false)
+  const [manualAddress, setManualAddress] = useState('')
+  const [manualTokenId, setManualTokenId] = useState('')
+  const [manualType, setManualType] = useState('ERC721')
+  const [manualAmount, setManualAmount] = useState('1')
+  const [quantityNft, setQuantityNft] = useState(null)
+  const [quantity, setQuantity] = useState('1')
+  const [openCollection, setOpenCollection] = useState(null)
+  const [fullCollectionNfts, setFullCollectionNfts] = useState(null)
+  const [loadingCollection, setLoadingCollection] = useState(false)
+  const [showSpam, setShowSpam] = useState(false)
+  const [initialKeys, setInitialKeys] = useState(null)
+
+  // Expose a "try back out" function: returns true if it handled the back (closed a collection)
+  useEffect(() => {
+    if (backRef) {
+      backRef.current = () => {
+        if (openCollection) {
+          setOpenCollection(null)
+          setFullCollectionNfts(null)
+          return true
+        }
+        return false
+      }
+    }
+  }, [backRef, openCollection])
+
+  // Compute which collection to drill into (for the fetch effect + render)
+  // Auto-expand: if there's exactly one non-spam collection and no spam, drill in automatically
+  const autoExpandAddr = (() => {
+    const entries = Object.entries(collections)
+    const nonSpam = entries.filter(([, c]) => !c.isSpam)
+    if (nonSpam.length === 1 && entries.length === nonSpam.length) return nonSpam[0][0]
+    return null
+  })()
+  const effectiveDrillAddr = openCollection || autoExpandAddr || null
+
+  // When drilling into a collection, fetch all tokens for that contract
+  useEffect(() => {
+    if (!effectiveDrillAddr || !address || !chainId) {
+      setFullCollectionNfts(null)
+      return
+    }
+    let cancelled = false
+    setLoadingCollection(true)
+    fetchNFTsForContract(address, chainId, effectiveDrillAddr)
+      .then((fetched) => {
+        if (!cancelled) setFullCollectionNfts(fetched)
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoadingCollection(false) })
+    return () => { cancelled = true }
+  }, [effectiveDrillAddr, address, chainId])
+
+  // Fetch collections via getContractsForOwner
+  useEffect(() => {
+    if (!address || !chainId || !isOwnWallet) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    setCollections({})
+    setPageKey(null)
+    setOpenCollection(null)
+    setInitialKeys(null)
+    setPaginationBroken(false)
+
+    async function fetchUntilFull() {
+      let allCols = {}
+      let key = null
+
+      try {
+        const first = await fetchCollections(address, chainId)
+        if (cancelled) return
+        for (const col of first.collections) {
+          allCols[col.address.toLowerCase()] = normalizeCollection(col)
+        }
+        key = first.pageKey
+
+        // Auto-fetch until 50 non-spam collections
+        while (key && !cancelled) {
+          const nonSpamCount = Object.values(allCols).filter((c) => !c.isSpam).length
+          if (nonSpamCount >= 50) break
+
+          const prevKey = key
+          const page = await fetchCollections(address, chainId, key)
+          if (cancelled) return
+
+          // Alchemy pagination bug: page 2+ often returns 400 → empty result.
+          // Preserve the last valid pageKey so we know there are more collections.
+          if (page.collections.length === 0) {
+            key = prevKey
+            setPaginationBroken(true)
+            break
+          }
+
+          for (const col of page.collections) {
+            allCols[col.address.toLowerCase()] = normalizeCollection(col)
+          }
+          key = page.pageKey
+        }
+
+        // Compute sorted order before first render to avoid jitter
+        if (!cancelled) {
+          const sorted = sortCollectionEntries(Object.entries(allCols))
+          setInitialKeys(sorted.map(([k]) => k))
+          setCollections({ ...allCols })
+          setPageKey(key)
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    fetchUntilFull()
+    return () => { cancelled = true }
+  }, [address, chainId, isOwnWallet])
+
+  const loadMore = useCallback(async () => {
+    if (!pageKey || loadingMore || paginationBroken) return
+    setLoadingMore(true)
+    try {
+      const { collections: more, pageKey: nextKey } = await fetchCollections(address, chainId, pageKey)
+      if (more.length === 0) {
+        // Pagination failed — keep pageKey but stop trying
+        setPaginationBroken(true)
+        return
+      }
+      setCollections((prev) => {
+        const updated = { ...prev }
+        for (const col of more) {
+          updated[col.address.toLowerCase()] = normalizeCollection(col)
+        }
+        return updated
+      })
+      setPageKey(nextKey)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [address, chainId, pageKey, loadingMore, paginationBroken])
+
+  const isSelected = useCallback((contract, tokenId) => {
+    return selected.some((a) =>
+      a.token?.toLowerCase() === contract.toLowerCase() && String(a.tokenId) === String(tokenId)
+    )
+  }, [selected])
+
+  const toggleNft = useCallback((nft) => {
+    const contract = nft.contract
+    const tokenId = nft.tokenId
+
+    if (isSelected(contract, tokenId)) {
+      onChange(selected.filter((a) =>
+        !(a.token?.toLowerCase() === contract.toLowerCase() && String(a.tokenId) === String(tokenId))
+      ))
+      return
+    }
+
+    if (nft.tokenType === 'ERC1155' && BigInt(nft.balance) > 1n) {
+      setQuantityNft(nft)
+      setQuantity('1')
+      return
+    }
+
+    onChange([...selected, {
+      token: contract,
+      tokenId,
+      amount: '1',
+      assetType: nft.tokenType === 'ERC1155' ? 'ERC1155' : 'ERC721',
+      _name: nft.name,
+      _image: nft.image,
+      _collection: nft.contractName,
+    }])
+  }, [selected, onChange, isSelected])
+
+  const confirmQuantity = useCallback(() => {
+    if (!quantityNft) return
+    const qty = parseInt(quantity, 10)
+    if (!qty || qty < 1 || qty > Number(quantityNft.balance)) return
+    onChange([...selected, {
+      token: quantityNft.contract,
+      tokenId: quantityNft.tokenId,
+      amount: String(qty),
+      assetType: 'ERC1155',
+      _name: quantityNft.name,
+      _image: quantityNft.image,
+      _collection: quantityNft.contractName,
+    }])
+    setQuantityNft(null)
+  }, [quantityNft, quantity, selected, onChange])
+
+  const addManual = useCallback(async () => {
+    if (!manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualTokenId && manualTokenId !== '0')) return
+    const asset = {
+      token: manualAddress,
+      tokenId: manualTokenId,
+      amount: manualType === 'ERC1155' ? manualAmount || '1' : '1',
+      assetType: manualType,
+    }
+    try {
+      const meta = await fetchMetadata(chainId, manualAddress, manualTokenId, manualType === 'ERC1155' ? 1 : 0)
+      if (meta) {
+        asset._name = meta.name
+        asset._image = meta.image
+      }
+    } catch { /* ignore */ }
+    onChange([...selected, asset])
+    setManualAddress('')
+    setManualTokenId('')
+    setManualAmount('1')
+    setShowManual(false)
+  }, [manualAddress, manualTokenId, manualType, manualAmount, chainId, selected, onChange])
+
+  // Filter collections
+  const filterLower = filter.toLowerCase()
+  const filteredCollections = filter
+    ? Object.fromEntries(
+        Object.entries(collections).filter(([addr, col]) =>
+          col.name.toLowerCase().includes(filterLower) ||
+          addr.includes(filterLower)
+        )
+      )
+    : collections
+
+  // Order collections: initial load sorted (verified first), then new additions at end
+  const orderedEntries = (() => {
+    const entries = Object.entries(filteredCollections)
+    if (!initialKeys || filter) return entries
+    const entryMap = Object.fromEntries(entries)
+    const ordered = []
+    // Initial keys in their sorted order
+    for (const k of initialKeys) {
+      if (entryMap[k]) ordered.push([k, entryMap[k]])
+    }
+    // New keys (from Load More) appended at end
+    for (const [k, v] of entries) {
+      if (!initialKeys.includes(k)) ordered.push([k, v])
+    }
+    return ordered
+  })()
+
+  // Split into non-spam and spam
+  const collectionEntries = orderedEntries.filter(([, col]) => !col.isSpam)
+  const spamEntries = orderedEntries.filter(([, col]) => col.isSpam)
+
+  // Use the pre-computed drill address (handles both explicit open and auto-expand)
+  // When filtering, suppress auto-expand but allow explicit drill-in
+  const drillAddr = (filter && !openCollection) ? null : effectiveDrillAddr
+  const drillCollectionMeta = drillAddr ? collections[drillAddr] : null
+  // Collections from getContractsForOwner don't include individual NFTs —
+  // drill-down always uses fullCollectionNfts from fetchNFTsForContract
+  const drillCollection = drillCollectionMeta
+    ? { ...drillCollectionMeta, nfts: fullCollectionNfts || [] }
+    : null
+
+  return (
+    <div className="collectibles-tab">
+      {quantityNft && (
+        <div className="quantity-picker">
+          <p>
+            How many <strong>{quantityNft.name}</strong>? (max {quantityNft.balance})
+          </p>
+          <div className="quantity-picker-row">
+            <input
+              type="number"
+              min="1"
+              max={quantityNft.balance}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+            />
+            <button type="button" className="btn btn-sm" onClick={confirmQuantity}>Add</button>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setQuantityNft(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {isOwnWallet && Object.keys(collections).length > 0 && (
+        <input
+          type="text"
+          className="asset-picker-filter"
+          placeholder="Search by name or collection..."
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+      )}
+
+      {error && <p className="form-error">{error}</p>}
+
+      {isOwnWallet && !loading && !error && Object.keys(collections).length === 0 && (
+        <p className="text-muted">No collectibles found. You can add one manually below.</p>
+      )}
+
+      {!isOwnWallet && (
+        <p className="text-muted">Add collectibles by contract address and token ID.</p>
+      )}
+
+      {/* Drill-down: show individual tokens from a collection */}
+      {drillCollection && (
+        <div className="collection-drill">
+          {!autoExpandAddr && (
+            <button
+              type="button"
+              className="btn-link collection-back"
+              onClick={() => { setOpenCollection(null); setFullCollectionNfts(null) }}
+            >
+              &larr; All collections
+            </button>
+          )}
+          <h4 className="collection-drill-title">{drillCollection.name}</h4>
+          <div className="nft-grid">
+            {drillCollection.nfts.map((nft) => {
+              const sel = isSelected(nft.contract, nft.tokenId)
+              return (
+                <button
+                  key={`${nft.contract}-${nft.tokenId}`}
+                  className={`nft-grid-item${sel ? ' nft-grid-item-selected' : ''}`}
+                  onClick={() => toggleNft(nft)}
+                  type="button"
+                >
+                  <div className="nft-grid-image">
+                    {nft.image ? (
+                      <img src={nft.image} alt={nft.name} loading="lazy" />
+                    ) : (
+                      <span className="asset-card-placeholder">?</span>
+                    )}
+                    {sel && <span className="nft-grid-check">&#10003;</span>}
+                  </div>
+                  <div className="nft-grid-label">
+                    <span className="nft-grid-name">{nft.name}</span>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Collection grid: show grouped collections */}
+      {!drillCollection && collectionEntries.length > 0 && (
+        <div className="nft-grid">
+          {collectionEntries.map(([contractAddr, col]) => {
+            const selectedCount = selected.filter((a) =>
+              a.token?.toLowerCase() === contractAddr.toLowerCase()
+            ).length
+            return (
+              <button
+                key={contractAddr}
+                className={`nft-grid-item${selectedCount > 0 ? ' nft-grid-item-selected' : ''}${col.isSpam ? ' nft-grid-item-spam' : ''}`}
+                onClick={() => setOpenCollection(contractAddr)}
+                type="button"
+              >
+                <div className="nft-grid-image">
+                  {col.thumbnail ? (
+                    <img src={col.thumbnail} alt={col.name} loading="lazy" />
+                  ) : (
+                    <span className="asset-card-placeholder">?</span>
+                  )}
+                  {selectedCount > 0 && <span className="nft-grid-check">{selectedCount}</span>}
+                  {col.isVerified && <span className="nft-grid-verified" title="Verified on OpenSea">&#10003;</span>}
+                </div>
+                <div className="nft-grid-label">
+                  <span className="nft-grid-name">{col.name}</span>
+                  {Number(col.tokenCount) > 0 && (
+                    <span className="nft-grid-count">{col.tokenCount} owned</span>
+                  )}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {pageKey && !loading && !drillCollection && (
+        paginationBroken ? (
+          <p className="text-muted" style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+            Some collections may not be shown. Use &ldquo;Add collectible manually&rdquo; below if you don&rsquo;t see what you&rsquo;re looking for.
+          </p>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={loadMore}
+            disabled={loadingMore}
+            style={{ display: 'block', marginTop: '0.5rem' }}
+          >
+            {loadingMore ? 'Loading...' : 'Load More Collections'}
+          </button>
+        )
+      )}
+
+      {spamEntries.length > 0 && !drillCollection && (
+        <>
+          <button
+            type="button"
+            className="btn-link btn-sm"
+            onClick={() => setShowSpam(!showSpam)}
+            style={{ display: 'block', marginTop: '0.5rem' }}
+          >
+            {showSpam ? 'Hide' : 'Show'} Potential Spam ({spamEntries.length})
+          </button>
+
+          {showSpam && (
+            <div className="nft-grid">
+              {spamEntries.map(([contractAddr, col]) => {
+                const selectedCount = selected.filter((a) =>
+                  a.token?.toLowerCase() === contractAddr.toLowerCase()
+                ).length
+                return (
+                  <button
+                    key={contractAddr}
+                    className={`nft-grid-item nft-grid-item-spam${selectedCount > 0 ? ' nft-grid-item-selected' : ''}`}
+                    onClick={() => setOpenCollection(contractAddr)}
+                    type="button"
+                  >
+                    <div className="nft-grid-image">
+                      {col.thumbnail ? (
+                        <img src={col.thumbnail} alt={col.name} loading="lazy" />
+                      ) : (
+                        <span className="asset-card-placeholder">?</span>
+                      )}
+                      {selectedCount > 0 && <span className="nft-grid-check">{selectedCount}</span>}
+                    </div>
+                    <div className="nft-grid-label">
+                      <span className="nft-grid-name">{col.name}</span>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="manual-entry">
+        <button
+          type="button"
+          className="btn-link"
+          onClick={() => setShowManual(!showManual)}
+        >
+          {showManual ? 'Hide manual entry' : 'Add collectible manually'}
+        </button>
+
+        {showManual && (
+          <div className="manual-entry-form">
+            {address && (
+              <a
+                href={`https://opensea.io/${address}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-link btn-sm"
+                style={{ marginBottom: '0.5rem', display: 'inline-block' }}
+              >
+                View on OpenSea &rarr;
+              </a>
+            )}
+            <input
+              type="text"
+              placeholder="Contract address (0x...)"
+              value={manualAddress}
+              onChange={(e) => setManualAddress(e.target.value)}
+              spellCheck={false}
+            />
+            <input
+              type="text"
+              placeholder="Token ID"
+              value={manualTokenId}
+              onChange={(e) => setManualTokenId(e.target.value)}
+            />
+            <div className="manual-entry-row">
+              <select value={manualType} onChange={(e) => setManualType(e.target.value)}>
+                <option value="ERC721">ERC-721</option>
+                <option value="ERC1155">ERC-1155</option>
+              </select>
+              {manualType === 'ERC1155' && (
+                <input
+                  type="text"
+                  placeholder="Amount"
+                  value={manualAmount}
+                  onChange={(e) => setManualAmount(e.target.value)}
+                  style={{ width: '80px' }}
+                />
+              )}
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={addManual}
+                disabled={!manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualTokenId && manualTokenId !== '0')}
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Cash Tab ──────────────────────────────────────────────────────
+
+function CashTab({ address, chainId, selected, onChange, showNative, isOwnWallet, dimZeroBalance }) {
+  const [balances, setBalances] = useState({})
+  const [loadingBal, setLoadingBal] = useState(false)
+  const [nativeBalance, setNativeBalance] = useState(null)
+
+  const whitelisted = WHITELISTED_ERC20[chainId] || {}
+  const tokens = Object.entries(whitelisted)
+
+  // Fetch balances
+  useEffect(() => {
+    if (!address || !chainId || !isOwnWallet) return
+    const chain = CHAINS[chainId]
+    if (!chain) return
+
+    setLoadingBal(true)
+    const provider = new JsonRpcProvider(chain.rpcUrl)
+
+    const promises = tokens.map(async ([addr, info]) => {
+      try {
+        const contract = new Contract(addr, ERC20_ABI, provider)
+        const bal = await contract.balanceOf(address)
+        return [addr, formatUnits(bal, info.decimals)]
+      } catch {
+        return [addr, null]
+      }
+    })
+
+    if (showNative) {
+      promises.push(
+        provider.getBalance(address).then((bal) => {
+          setNativeBalance(formatUnits(bal, 18))
+          return null
+        }).catch(() => null)
+      )
+    }
+
+    Promise.all(promises).then((results) => {
+      const map = {}
+      for (const r of results) {
+        if (r && r[0]) map[r[0]] = r[1]
+      }
+      setBalances(map)
+      setLoadingBal(false)
+    })
+  }, [address, chainId, isOwnWallet])
+
+  const getSelectedAmount = useCallback((tokenAddr) => {
+    const asset = selected.find((a) =>
+      a.assetType === 'ERC20' && a.token?.toLowerCase() === tokenAddr.toLowerCase()
+    )
+    return asset?.amount || ''
+  }, [selected])
+
+  const getNativeAmount = useCallback(() => {
+    const asset = selected.find((a) => a.assetType === 'NATIVE')
+    return asset?.amount || ''
+  }, [selected])
+
+  const setTokenAmount = useCallback((tokenAddr, symbol, decimals, amount) => {
+    const rest = selected.filter((a) =>
+      !(a.assetType === 'ERC20' && a.token?.toLowerCase() === tokenAddr.toLowerCase())
+    )
+    if (amount !== '' && amount !== undefined) {
+      rest.push({ token: tokenAddr, amount, assetType: 'ERC20', _symbol: symbol, _decimals: decimals })
+    }
+    onChange(rest)
+  }, [selected, onChange])
+
+  const setNativeAmount = useCallback((amount) => {
+    const rest = selected.filter((a) => a.assetType !== 'NATIVE')
+    if (amount !== '' && amount !== undefined) {
+      rest.push({ assetType: 'NATIVE', token: '', tokenId: '', amount })
+    }
+    onChange(rest)
+  }, [selected, onChange])
+
+  return (
+    <div className="cash-tab">
+      {showNative && (
+        <CashRow
+          symbol={CHAINS[chainId]?.nativeSymbol || 'ETH'}
+          balance={isOwnWallet ? nativeBalance : null}
+          showBalance={isOwnWallet}
+          amount={getNativeAmount()}
+          onAmountChange={setNativeAmount}
+          disabled={dimZeroBalance && isOwnWallet && (nativeBalance === null || Number(nativeBalance) === 0)}
+        />
+      )}
+
+      {tokens.map(([addr, info]) => {
+        const bal = balances[addr]
+        const disabled = dimZeroBalance && isOwnWallet && (bal === undefined || bal === null || Number(bal) === 0)
+        return (
+          <CashRow
+            key={addr}
+            symbol={info.symbol}
+            balance={isOwnWallet ? bal : null}
+            showBalance={isOwnWallet}
+            amount={getSelectedAmount(addr)}
+            onAmountChange={(amt) => setTokenAmount(addr, info.symbol, info.decimals, amt)}
+            disabled={disabled}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+const TOKEN_LOGOS = {
+  ETH: new URL('../../assets/tokens/eth.png', import.meta.url).href,
+  POL: new URL('../../assets/tokens/pol.png', import.meta.url).href,
+  WETH: new URL('../../assets/tokens/weth.png', import.meta.url).href,
+  USDC: new URL('../../assets/tokens/usdc.png', import.meta.url).href,
+  USDT: new URL('../../assets/tokens/usdt.png', import.meta.url).href,
+  USDT0: new URL('../../assets/tokens/usdt.png', import.meta.url).href,
+  USDS: new URL('../../assets/tokens/usds.png', import.meta.url).href,
+  EURC: new URL('../../assets/tokens/eurc.png', import.meta.url).href,
+}
+
+function CashRow({ symbol, balance, showBalance, amount, onAmountChange, disabled }) {
+  const logo = TOKEN_LOGOS[symbol]
+  return (
+    <div className={`cash-row${disabled ? ' cash-row-disabled' : ''}`}>
+      <div className="cash-row-info">
+        {logo && <img src={logo} alt={symbol} className="cash-row-logo" />}
+        <div className="cash-row-text">
+          <span className="cash-row-symbol">{symbol}</span>
+          {showBalance && (
+            <span className="cash-row-balance">Balance: {balance !== null && balance !== undefined ? Number(balance).toLocaleString(undefined, { maximumFractionDigits: 6 }) : '–'}</span>
+          )}
+        </div>
+      </div>
+      <div className="cash-row-input">
+        <input
+          type="text"
+          placeholder="0"
+          value={amount}
+          onChange={(e) => onAmountChange(e.target.value)}
+          disabled={disabled}
+        />
+      </div>
+    </div>
+  )
+}

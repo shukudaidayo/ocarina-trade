@@ -7,53 +7,83 @@ const CHAIN_NETWORKS = {
 }
 
 /**
- * Fetch NFTs owned by an address using the Alchemy Portfolio API.
- * Returns { nfts: [...], pageKey: string|null }
+ * Fetch collections (contracts) owned by an address using getContractsForOwner.
+ * Returns { collections: [...], pageKey: string|null, totalCount: number }
+ * Each collection: { address, name, tokenType, numDistinctTokensOwned, totalBalance,
+ *                    isSpam, safelistStatus, image, collectionImage }
  */
-export async function fetchWalletNFTs(address, chainId, pageKey = null) {
-  if (!ALCHEMY_API_KEY) {
-    throw new Error('VITE_ALCHEMY_API_KEY not set')
-  }
+export async function fetchCollections(address, chainId, pageKey = null) {
+  if (!ALCHEMY_API_KEY) throw new Error('VITE_ALCHEMY_API_KEY not set')
 
   const network = CHAIN_NETWORKS[chainId]
-  if (!network) {
-    throw new Error(`Unsupported chain: ${chainId}`)
-  }
+  if (!network) throw new Error(`Unsupported chain: ${chainId}`)
 
-  const body = {
-    addresses: [{ address, networks: [network] }],
-    excludeFilters: ['SPAM'],
-    withMetadata: true,
-    pageSize: 100,
-  }
-  if (pageKey) body.pageKey = pageKey
+  let url = `https://${network}.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}/getContractsForOwner?owner=${address}&withMetadata=true&pageSize=50`
+  if (pageKey) url += `&pageKey=${encodeURIComponent(pageKey)}`
 
-  const res = await fetch(
-    `https://api.g.alchemy.com/data/v1/${ALCHEMY_API_KEY}/assets/nfts/by-address`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    },
-  )
+  const res = await fetch(url)
 
-  if (!res.ok) {
+  if (!res.ok && (res.status === 400 || res.status === 403)) {
+    if (pageKey) return { collections: [], pageKey: null, totalCount: 0 }
+    return { collections: [], pageKey: null, totalCount: 0 }
+  } else if (!res.ok) {
     throw new Error(`Alchemy API error: ${res.status}`)
   }
 
   const data = await res.json()
-  const raw = data.data?.ownedNfts || []
-  const nfts = raw.map((nft) => ({
-    contract: nft.contract?.address,
-    contractName: nft.contract?.name || '',
-    tokenType: nft.tokenType || nft.contract?.tokenType || 'ERC721',
-    tokenId: nft.tokenId,
-    name: nft.name || `#${nft.tokenId}`,
-    image: nft.image?.thumbnailUrl || nft.image?.cachedUrl || null,
-    balance: String(nft.balance ?? nft.amount ?? '1'),
+  const raw = data.contracts || []
+  const collections = raw.map((c) => ({
+    address: c.address,
+    name: c.openSeaMetadata?.collectionName || c.name || '',
+    tokenType: c.tokenType || 'ERC721',
+    numDistinctTokensOwned: c.numDistinctTokensOwned || '0',
+    totalBalance: c.totalBalance || '0',
+    isSpam: c.isSpam || false,
+    safelistStatus: c.openSeaMetadata?.safelistRequestStatus || null,
+    image: c.image?.thumbnailUrl || c.image?.cachedUrl || null,
+    collectionImage: c.openSeaMetadata?.imageUrl || null,
   }))
 
-  return { nfts, pageKey: data.data?.pageKey || null }
+  return { collections, pageKey: data.pageKey || null, totalCount: data.totalCount || 0 }
+}
+
+/**
+ * Fetch all NFTs owned by an address for a specific contract.
+ * Pages through all results automatically.
+ */
+export async function fetchNFTsForContract(address, chainId, contractAddress) {
+  if (!ALCHEMY_API_KEY) return []
+
+  const network = CHAIN_NETWORKS[chainId]
+  if (!network) return []
+
+  let allNfts = []
+  let pageKey = null
+
+  do {
+    let url = `https://${network}.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}/getNFTsForOwner?owner=${address}&withMetadata=true&pageSize=100&contractAddresses[]=${contractAddress}`
+    if (pageKey) url += `&pageKey=${encodeURIComponent(pageKey)}`
+
+    const res = await fetch(url)
+    if (!res.ok) break
+
+    const data = await res.json()
+    const raw = data.ownedNfts || []
+    allNfts.push(...raw.map((nft) => ({
+      contract: nft.contract?.address,
+      contractName: nft.collection?.name || nft.contract?.openSeaMetadata?.collectionName || nft.contract?.name || '',
+      tokenType: nft.tokenType || nft.contract?.tokenType || 'ERC721',
+      tokenId: nft.tokenId,
+      name: nft.name || `#${nft.tokenId}`,
+      image: nft.image?.thumbnailUrl || nft.image?.cachedUrl || null,
+      balance: String(nft.balance ?? '1'),
+      isSpam: nft.contract?.isSpam || false,
+      safelistStatus: nft.contract?.openSeaMetadata?.safelistRequestStatus || null,
+    })))
+    pageKey = data.pageKey || null
+  } while (pageKey)
+
+  return allNfts
 }
 
 // Cache contract metadata to avoid repeated API calls

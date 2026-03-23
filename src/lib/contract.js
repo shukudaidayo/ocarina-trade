@@ -5,6 +5,21 @@ import { CHAINS, SEAPORT_ADDRESS, ZONE_ADDRESSES, ZONE_DEPLOY_BLOCKS, ZONE_ABI, 
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
+/**
+ * Retry an async function up to `n` times with a brief delay between attempts.
+ * Only retries on network/RPC errors, not on application-level errors.
+ */
+async function retry(fn, n = 3, delayMs = 500) {
+  for (let i = 0; i < n; i++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (i === n - 1) throw err
+      await new Promise((r) => setTimeout(r, delayMs * (i + 1)))
+    }
+  }
+}
+
 const APPROVAL_ABI = [
   'function isApprovedForAll(address owner, address operator) view returns (bool)',
   'function setApprovalForAll(address operator, bool approved)',
@@ -18,7 +33,7 @@ const ERC20_APPROVE_ABI = [
 /**
  * Get an ethers signer from a raw EIP-1193 provider.
  */
-export async function getSigner(rawProvider) {
+async function getSigner(rawProvider) {
   const provider = new BrowserProvider(rawProvider)
   return provider.getSigner()
 }
@@ -26,7 +41,7 @@ export async function getSigner(rawProvider) {
 /**
  * Get a Seaport SDK instance connected to a signer.
  */
-export async function getSeaport(rawProvider) {
+async function getSeaport(rawProvider) {
   const signer = await getSigner(rawProvider)
   return new Seaport(signer)
 }
@@ -189,40 +204,54 @@ export async function createOrder(rawProvider, chainId, {
 export async function getOrderFromTx(chainId, txHash) {
   const chain = CHAINS[chainId]
   if (!chain) throw new Error(`Unsupported chain ${chainId}`)
-  const provider = new JsonRpcProvider(chain.rpcUrl)
-  const receipt = await provider.getTransactionReceipt(txHash)
-  if (!receipt) throw new Error('Transaction not found')
+  return retry(async () => {
+    const provider = new JsonRpcProvider(chain.rpcUrl)
+    const receipt = await provider.getTransactionReceipt(txHash)
+    if (!receipt) throw new Error('Transaction not found')
 
-  const iface = new Interface(ZONE_ABI)
-  for (const log of receipt.logs) {
-    try {
-      const parsed = iface.parseLog(log)
-      if (parsed?.name === 'OrderRegistered') {
-        const order = JSON.parse(atob(parsed.args.orderURI))
-        return {
-          zoneAddress: receipt.to,
-          orderHash: parsed.args.orderHash,
-          maker: parsed.args.maker,
-          taker: parsed.args.taker,
-          memo: parsed.args.memo || '',
-          order, // The full signed Seaport order (OrderWithCounter)
+    const iface = new Interface(ZONE_ABI)
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log)
+        if (parsed?.name === 'OrderRegistered') {
+          const order = JSON.parse(atob(parsed.args.orderURI))
+          return {
+            zoneAddress: receipt.to,
+            orderHash: parsed.args.orderHash,
+            maker: parsed.args.maker,
+            taker: parsed.args.taker,
+            memo: parsed.args.memo || '',
+            order,
+          }
         }
-      }
-    } catch {}
-  }
-  throw new Error('No OrderRegistered event found in transaction')
+      } catch {}
+    }
+    throw new Error('No OrderRegistered event found in transaction')
+  })
 }
 
 /**
  * Get the on-chain status of a Seaport order.
  * Returns { isValidated, isCancelled, totalFilled, totalSize }
  */
+// Cache read-only providers and Seaport instances per chain
+const readProviders = {}
+function getReadSeaport(chainId) {
+  if (!readProviders[chainId]) {
+    const chain = CHAINS[chainId]
+    const provider = new JsonRpcProvider(chain.rpcUrl)
+    readProviders[chainId] = new Seaport(provider)
+  }
+  return readProviders[chainId]
+}
+
 export async function getOrderStatus(chainId, orderHash) {
   const chain = CHAINS[chainId]
   if (!chain) throw new Error(`Unsupported chain ${chainId}`)
-  const provider = new JsonRpcProvider(chain.rpcUrl)
-  const seaport = new Seaport(provider)
-  return seaport.getOrderStatus(orderHash)
+  return retry(async () => {
+    const seaport = getReadSeaport(chainId)
+    return seaport.getOrderStatus(orderHash)
+  })
 }
 
 /**
@@ -246,29 +275,115 @@ export async function cancelOrder(rawProvider, orderComponents) {
 
 /**
  * Query all OrderRegistered events from the OTCZone contract.
+ * Uses Blockscout API to get tx list, then fetches receipts via RPC.
+ * Falls back to scanning recent blocks via RPC if Blockscout is unavailable.
  */
 export async function queryOrderEvents(chainId, zoneAddress) {
   const chain = CHAINS[chainId]
   if (!chain) throw new Error(`Unsupported chain ${chainId}`)
+
+  // Try Blockscout first — full archive, no API key needed
+  if (chain.blockscoutApi) {
+    try {
+      const registrations = await queryViaBlockscout(chainId, zoneAddress, chain)
+      if (registrations !== null) return registrations
+    } catch (err) {
+      console.warn('Blockscout query failed, falling back to RPC:', err.message)
+    }
+  }
+
+  // Fallback: scan recent blocks via RPC
+  return queryViaRpc(chainId, zoneAddress, chain)
+}
+
+async function queryViaBlockscout(chainId, zoneAddress, chain) {
+  const url = `${chain.blockscoutApi}?module=account&action=txlist&address=${zoneAddress}&startblock=0&endblock=99999999&sort=asc`
+  const res = await fetch(url)
+  if (!res.ok) return null
+
+  const data = await res.json()
+  if (data.status !== '1' || !Array.isArray(data.result)) {
+    // status "0" with empty result means no transactions — that's valid
+    if (data.message === 'No transactions found') return []
+    return null
+  }
+
+  // Filter to successful txs only
+  const txs = data.result.filter((tx) => tx.txreceipt_status === '1' || tx.isError === '0')
+  if (txs.length === 0) return []
+
+  // Fetch receipts and parse OrderRegistered events
+  const provider = new JsonRpcProvider(chain.rpcUrl)
+  const iface = new Interface(ZONE_ABI)
+  const BATCH = 5
+  const registrations = []
+
+  for (let i = 0; i < txs.length; i += BATCH) {
+    const batch = txs.slice(i, i + BATCH)
+    const results = await Promise.all(
+      batch.map(async (tx) => {
+        try {
+          const receipt = await retry(() => provider.getTransactionReceipt(tx.hash))
+          if (!receipt) return null
+          for (const log of receipt.logs) {
+            try {
+              const parsed = iface.parseLog(log)
+              if (parsed?.name === 'OrderRegistered') {
+                let order = null
+                try { order = JSON.parse(atob(parsed.args.orderURI)) } catch {}
+                return {
+                  orderHash: parsed.args.orderHash,
+                  maker: parsed.args.maker,
+                  taker: parsed.args.taker,
+                  memo: parsed.args.memo || '',
+                  order,
+                  blockNumber: receipt.blockNumber,
+                  transactionHash: receipt.hash,
+                }
+              }
+            } catch {}
+          }
+        } catch (err) {
+          console.warn('Failed to fetch receipt for', tx.hash, err.message)
+        }
+        return null
+      })
+    )
+    registrations.push(...results.filter(Boolean))
+  }
+
+  return registrations
+}
+
+async function queryViaRpc(chainId, zoneAddress, chain) {
   const provider = new JsonRpcProvider(chain.rpcUrl)
   const zone = new Contract(zoneAddress, ZONE_ABI, provider)
 
-  const fromBlock = ZONE_DEPLOY_BLOCKS[chainId] ?? 0
   const latestBlock = await provider.getBlockNumber()
+  // Scan last ~50k blocks as fallback (roughly 1-2 days on Polygon, 1 week on Ethereum)
+  const fromBlock = Math.max(latestBlock - 49999, ZONE_DEPLOY_BLOCKS[chainId] ?? 0)
 
-  const chunkSize = 49999
-  const logs = []
+  const chunkSize = (chainId === 137 || chainId === 8453) ? 9999 : 49999
+  const ranges = []
   for (let start = fromBlock; start <= latestBlock; start += chunkSize + 1) {
-    const end = Math.min(start + chunkSize, latestBlock)
-    const chunk = await zone.queryFilter('OrderRegistered', start, end)
-    logs.push(...chunk)
+    ranges.push([start, Math.min(start + chunkSize, latestBlock)])
+  }
+
+  const CONCURRENT = 3
+  const logs = []
+  for (let i = 0; i < ranges.length; i += CONCURRENT) {
+    const batch = ranges.slice(i, i + CONCURRENT)
+    const chunks = await Promise.all(
+      batch.map(([start, end]) =>
+        retry(() => zone.queryFilter('OrderRegistered', start, end))
+      )
+    )
+    logs.push(...chunks.flat())
   }
 
   const registrations = logs.map((log) => {
     let order = null
-    try {
-      order = JSON.parse(atob(log.args.orderURI))
-    } catch {}
+    try { order = JSON.parse(atob(log.args.orderURI)) } catch {}
     return {
       orderHash: log.args.orderHash,
       maker: log.args.maker,
@@ -280,6 +395,8 @@ export async function queryOrderEvents(chainId, zoneAddress) {
     }
   })
 
+  // Mark as partial so the UI can show a disclaimer
+  registrations._partial = true
   return registrations
 }
 

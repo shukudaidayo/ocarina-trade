@@ -7,7 +7,7 @@ import { createHashRouter, RouterProvider } from 'react-router'
 import App from './app'
 import Home from './pages/home'
 import Create from './pages/create'
-import Swap from './pages/swap'
+import Trade from './pages/trade'
 import Offers from './pages/offers'
 import './style.css'
 
@@ -18,7 +18,7 @@ const router = createHashRouter([
     children: [
       { index: true, element: <Home /> },
       { path: 'create', element: <Create /> },
-      { path: 'swap/:chainId/:txHash', element: <Swap /> },
+      { path: 'trade/:chainId/:txHash', element: <Trade /> },
       { path: 'offers', element: <Offers /> },
     ],
   },

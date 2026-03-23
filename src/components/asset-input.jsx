@@ -1,4 +1,4 @@
-import { WHITELISTED_ERC20 } from '../lib/constants'
+import { WHITELISTED_ERC20, CHAINS } from '../lib/constants'
 import AssetCard from './asset-card'
 
 const ASSET_TYPES_OFFER = [
@@ -7,14 +7,15 @@ const ASSET_TYPES_OFFER = [
   { value: 'ERC20', label: 'ERC-20' },
 ]
 
-const ASSET_TYPES_CONSIDERATION = [
-  { value: 'ERC721', label: 'ERC-721' },
-  { value: 'ERC1155', label: 'ERC-1155' },
-  { value: 'ERC20', label: 'ERC-20' },
-  { value: 'NATIVE', label: 'ETH' },
-]
-
 export default function AssetInput({ asset, onChange, onRemove, chainId, side = 'offer' }) {
+  const nativeSym = CHAINS[chainId]?.nativeSymbol || 'ETH'
+
+  const ASSET_TYPES_CONSIDERATION = [
+    { value: 'ERC721', label: 'ERC-721' },
+    { value: 'ERC1155', label: 'ERC-1155' },
+    { value: 'ERC20', label: 'ERC-20' },
+    { value: 'NATIVE', label: nativeSym },
+  ]
   const isERC20 = asset.assetType === 'ERC20'
   const isNative = asset.assetType === 'NATIVE'
   const isERC1155 = asset.assetType === 'ERC1155'
@@ -61,7 +62,7 @@ export default function AssetInput({ asset, onChange, onRemove, chainId, side = 
         <div className="asset-input-row">
           <input
             type="text"
-            placeholder="Amount (ETH)"
+            placeholder={`Amount (${nativeSym})`}
             value={asset.amount}
             onChange={(e) => onChange({ ...asset, amount: e.target.value })}
           />

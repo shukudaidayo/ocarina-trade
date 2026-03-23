@@ -27,6 +27,7 @@ export default function Offers() {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [partial, setPartial] = useState(false)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   // Follow wallet chain when it changes
@@ -46,6 +47,7 @@ export default function Offers() {
     setOrders([])
     setLoading(true)
     setError(null)
+    setPartial(false)
 
     let cancelled = false
     async function load() {
@@ -57,24 +59,32 @@ export default function Offers() {
 
         if (cancelled) return
 
-        // Fetch Seaport status for each order
-        const enriched = await Promise.all(
-          registrations.map(async (reg) => {
-            try {
-              const seaportStatus = await getOrderStatus(chainId, reg.orderHash)
-              const endTime = reg.order?.parameters?.endTime
-              const status = deriveOrderStatus(seaportStatus, endTime)
-              return { ...reg, status }
-            } catch {
-              return { ...reg, status: 'unknown' }
-            }
-          })
-        )
+        // Fetch Seaport status for each order (batched to avoid RPC rate limits)
+        const BATCH_SIZE = 3
+        const enriched = []
+        for (let i = 0; i < registrations.length; i += BATCH_SIZE) {
+          if (cancelled) return
+          const batch = registrations.slice(i, i + BATCH_SIZE)
+          const results = await Promise.all(
+            batch.map(async (reg) => {
+              try {
+                const seaportStatus = await getOrderStatus(chainId, reg.orderHash)
+                const endTime = reg.order?.parameters?.endTime
+                const status = deriveOrderStatus(seaportStatus, endTime)
+                return { ...reg, status }
+              } catch {
+                return { ...reg, status: 'unknown' }
+              }
+            })
+          )
+          enriched.push(...results)
+        }
 
         if (cancelled) return
 
         // Most recent first
         enriched.reverse()
+        if (registrations._partial) setPartial(true)
         setOrders(enriched)
       } catch (err) {
         console.error('Failed to load offers:', err)
@@ -94,12 +104,23 @@ export default function Offers() {
 
     let cancelled = false
 
-    Promise.all(
-      openOrders.map(async (o) => {
-        const results = await checkHoldings(chainId, o.maker, o.order.parameters.offer)
-        return { orderHash: o.orderHash, makerHoldsAll: results.every((h) => h.held) }
-      })
-    ).then((checks) => {
+    ;(async () => {
+      const BATCH = 5
+      const checks = []
+      for (let i = 0; i < openOrders.length; i += BATCH) {
+        if (cancelled) return
+        const batch = openOrders.slice(i, i + BATCH)
+        const results = await Promise.all(
+          batch.map(async (o) => {
+            const results = await checkHoldings(chainId, o.maker, o.order.parameters.offer)
+            return { orderHash: o.orderHash, makerHoldsAll: results.every((h) => h.held) }
+          })
+        )
+        checks.push(...results)
+      }
+      return checks
+    })().then((checks) => {
+      if (!checks) return
       if (cancelled) return
       const holdingsMap = {}
       for (const c of checks) holdingsMap[c.orderHash] = c.makerHoldsAll
@@ -184,6 +205,7 @@ export default function Offers() {
 
       {loading && <p className="text-muted">Loading offers...</p>}
       {error && <p className="form-error">{error}</p>}
+      {partial && !loading && <p className="text-muted">Only showing recent offers. Older offers may be missing.</p>}
 
       {!loading && !error && tab === 'mine' && !wallet && (
         <p className="text-muted">Connect your wallet to see your offers.</p>
@@ -192,7 +214,7 @@ export default function Offers() {
       {!loading && !error && filtered.length === 0 && (tab !== 'mine' || wallet) && (
         <p className="text-muted">
           {tab === 'mine' ? 'No offers involving your wallet.' :
-           tab === 'open' ? 'No open offers.' : 'No completed swaps yet.'}
+           tab === 'open' ? 'No open offers.' : 'No completed trades yet.'}
         </p>
       )}
 
@@ -218,11 +240,11 @@ export default function Offers() {
 }
 
 function OfferCard({ order, chainId, invalidHoldings }) {
-  const swapUrl = `/swap/${chainId}/${order.transactionHash}`
+  const tradeUrl = `/trade/${chainId}/${order.transactionHash}`
   const params = order.order?.parameters
 
   return (
-    <Link to={swapUrl} className={`offer-card${invalidHoldings ? ' offer-card-invalid' : ''}`}>
+    <Link to={tradeUrl} className={`offer-card${invalidHoldings ? ' offer-card-invalid' : ''}`}>
       <div className="offer-card-side">
         <span className="offer-label">Maker</span>
         <AddressDisplay address={order.maker} chainId={chainId} />
@@ -256,7 +278,7 @@ function AssetSummary({ items, chainId }) {
       {items.map((item, i) => {
         const it = Number(item.itemType)
         if (it === 0) {
-          return <span key={i} className="offer-asset-tag">{formatUnits(item.startAmount, 18)} ETH</span>
+          return <span key={i} className="offer-asset-tag">{formatUnits(item.startAmount, 18)} {CHAINS[chainId]?.nativeSymbol || 'ETH'}</span>
         }
         if (it === 1) {
           const info = (WHITELISTED_ERC20[chainId] || {})[item.token]

@@ -6,7 +6,7 @@ const projectId = import.meta.env.VITE_REOWN_PROJECT_ID
 
 const metadata = {
   name: 'ocarina.trade',
-  description: 'Peer-to-peer NFT swaps, fully on-chain',
+  description: 'Peer-to-peer NFT trades, fully onchain',
   url: window.location.origin,
   icons: [],
 }

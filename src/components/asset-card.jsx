@@ -1,11 +1,19 @@
 import { useState, useEffect } from 'react'
 import { fetchMetadata } from '../lib/metadata'
 import { getVerificationStatus, getEtherscanUrl } from '../lib/verification'
-import { WHITELISTED_ERC20 } from '../lib/constants'
-
-// Seaport ItemType enum values
-const ITEM_TYPE_LABELS = { 0: 'ETH', 1: 'ERC-20', 2: 'ERC-721', 3: 'ERC-1155' }
+import { WHITELISTED_ERC20, CHAINS } from '../lib/constants'
 const BADGE = { verified: '\u2705', unverified: '\u26A0\uFE0F', suspicious: '\uD83D\uDED1' }
+
+const TOKEN_LOGOS = {
+  ETH: new URL('../assets/tokens/eth.png', import.meta.url).href,
+  POL: new URL('../assets/tokens/pol.png', import.meta.url).href,
+  WETH: new URL('../assets/tokens/weth.png', import.meta.url).href,
+  USDC: new URL('../assets/tokens/usdc.png', import.meta.url).href,
+  USDT: new URL('../assets/tokens/usdt.png', import.meta.url).href,
+  USDT0: new URL('../assets/tokens/usdt.png', import.meta.url).href,
+  USDS: new URL('../assets/tokens/usds.png', import.meta.url).href,
+  EURC: new URL('../assets/tokens/eurc.png', import.meta.url).href,
+}
 
 function resolveItemType(asset) {
   if (asset.itemType !== undefined) return Number(asset.itemType)
@@ -35,6 +43,13 @@ export default function AssetCard({ asset, chainId }) {
       return
     }
 
+    // Use cached metadata from the asset picker if available
+    if (asset._image || asset._name) {
+      setMetadata({ name: asset._name, image: asset._image })
+      setLoading(false)
+      return
+    }
+
     let cancelled = false
     setLoading(true)
     setMetadata(null)
@@ -54,8 +69,13 @@ export default function AssetCard({ asset, chainId }) {
   }, [asset.token, asset.tokenId, itemType, chainId, isERC20, isNative, isERC1155])
 
   // Fetch verification status (async — may call Alchemy)
+  // Whitelisted ERC-20s are always verified — skip the lookup
   useEffect(() => {
     if (!asset.token || !chainId || isNative) return
+    if (erc20Info) {
+      setVerification({ status: 'verified', message: null })
+      return
+    }
 
     let cancelled = false
     getVerificationStatus(chainId, asset.token, metadata?.name).then((v) => {
@@ -63,19 +83,25 @@ export default function AssetCard({ asset, chainId }) {
     })
 
     return () => { cancelled = true }
-  }, [asset.token, chainId, isNative, metadata?.name])
+  }, [asset.token, chainId, isNative, erc20Info, metadata?.name])
 
-  // Native ETH — simple display, no verification needed
+  // Native currency — simple display, no verification needed
+  const nativeSym = CHAINS[chainId]?.nativeSymbol || 'ETH'
+  const nativeLogo = TOKEN_LOGOS[nativeSym]
   if (isNative) {
     return (
       <div className="asset-card asset-card-verified">
         <div className="asset-card-image">
-          <div className="asset-card-placeholder">ETH</div>
+          {nativeLogo ? (
+            <img src={nativeLogo} alt={nativeSym} />
+          ) : (
+            <div className="asset-card-placeholder">{nativeSym}</div>
+          )}
         </div>
         <div className="asset-card-info">
-          <span className="asset-card-name">{asset.amount || '0'} ETH</span>
+          <span className="asset-card-name">{asset.amount || '0'} {nativeSym}</span>
           <div className="asset-card-meta">
-            <span className="asset-type">Native ETH</span>
+            <span className="asset-type">Native {nativeSym}</span>
           </div>
         </div>
       </div>
@@ -94,7 +120,9 @@ export default function AssetCard({ asset, chainId }) {
     <div className={`asset-card asset-card-${vStatus.status}`}>
       <div className="asset-card-image">
         {isERC20 ? (
-          <div className="asset-card-placeholder">$</div>
+          erc20Info && TOKEN_LOGOS[erc20Info.symbol]
+            ? <img src={TOKEN_LOGOS[erc20Info.symbol]} alt={erc20Info.symbol} />
+            : <div className="asset-card-placeholder">$</div>
         ) : loading ? (
           <div className="asset-card-placeholder">...</div>
         ) : metadata?.image ? (
@@ -120,7 +148,7 @@ export default function AssetCard({ asset, chainId }) {
           {asset.token}
         </a>
         <div className="asset-card-meta">
-          <span className="asset-type">{ITEM_TYPE_LABELS[itemType] || 'Unknown'}</span>
+          <span className="asset-type">{{ 0: nativeSym, 1: 'ERC-20', 2: 'ERC-721', 3: 'ERC-1155' }[itemType] || 'Unknown'}</span>
           {isERC1155 && (
             <span className="asset-detail">&times;{asset.amount}</span>
           )}
