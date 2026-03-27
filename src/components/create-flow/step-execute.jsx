@@ -8,6 +8,17 @@ import AssetTally from './asset-tally'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
+function friendlyError(err) {
+  const msg = (err?.info?.error?.message || err?.reason || err?.shortMessage || err?.message || '').toLowerCase()
+  if (msg.includes('rejected') || msg.includes('denied') || msg.includes('user refused') || msg.includes('user canceled')) {
+    return 'Transaction rejected in wallet.'
+  }
+  if (msg.includes('insufficient funds') || msg.includes('insufficient balance')) {
+    return 'Insufficient funds for gas.'
+  }
+  return err?.reason || err?.shortMessage || 'Transaction failed.'
+}
+
 export default function StepExecute({ wallet, onComplete }) {
   const { back, chainId, taker, makerAssets, takerAssets, expiration, memo } = useCreateFlow()
   const [steps, setSteps] = useState([])
@@ -94,10 +105,11 @@ export default function StepExecute({ wallet, onComplete }) {
     } catch (err) {
       console.error(err)
       const failedIndex = txSteps.findIndex((s) => s.status === 'signing' || s.status === 'confirming')
+      const msg = friendlyError(err)
       if (failedIndex !== -1) {
-        updateStep(failedIndex, { status: 'failed', error: err.reason || err.message || 'Failed' })
+        updateStep(failedIndex, { status: 'failed', error: msg })
       }
-      setError(err.reason || err.message || 'Transaction failed')
+      setError(msg)
       setRunning(false)
     }
   }

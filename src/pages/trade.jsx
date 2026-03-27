@@ -30,10 +30,14 @@ function friendlyFillError(err) {
   if (raw.includes('execution reverted') || err.code === 'CALL_EXCEPTION') {
     return 'This trade cannot be completed. The maker may no longer hold the offered assets, or approvals may have been revoked.'
   }
-  if (err.code === 'ACTION_REJECTED' || raw.includes('user rejected')) {
-    return 'Transaction rejected by user.'
+  const nested = (err?.info?.error?.message || '').toLowerCase()
+  if (err.code === 'ACTION_REJECTED' || raw.includes('user rejected') || nested.includes('rejected') || nested.includes('denied') || nested.includes('user refused') || nested.includes('user canceled')) {
+    return 'Transaction rejected in wallet.'
   }
-  return err.reason || err.message || 'Transaction failed'
+  if (nested.includes('insufficient funds') || raw.includes('insufficient funds')) {
+    return 'Insufficient funds for gas.'
+  }
+  return err.reason || err.shortMessage || 'Transaction failed.'
 }
 
 export default function Trade() {
@@ -266,8 +270,9 @@ export default function Trade() {
       setStatusLabel('cancelled')
     } catch (err) {
       console.error(err)
-      updateStep(0, { status: 'failed', error: err.reason || err.message || 'Failed' })
-      setError(err.reason || err.message || 'Transaction failed')
+      const msg = friendlyFillError(err)
+      updateStep(0, { status: 'failed', error: msg })
+      setError(msg)
     } finally {
       setSubmitting(false)
     }

@@ -14,7 +14,6 @@ const metadata = {
 createAppKit({
   adapters: [new EthersAdapter()],
   networks: [mainnet, base, polygon],
-  defaultNetwork: mainnet,
   metadata,
   projectId,
   features: {
