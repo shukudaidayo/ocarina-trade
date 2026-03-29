@@ -61,7 +61,7 @@ export default function Home() {
             autoComplete="off"
             disabled={resolving}
           />
-          <button type="submit" className={`btn${isValid ? ' btn-primary' : ''}`} disabled={!trimmed || resolving}>
+          <button type="submit" className={`btn${isValid ? ' btn-primary' : ''}`} disabled={!isValid || resolving}>
             {resolving ? 'Resolving...' : 'Start'}
           </button>
         </div>

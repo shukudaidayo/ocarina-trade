@@ -12,6 +12,7 @@ import './style.css'
 const Create = lazy(() => import('./pages/create'))
 const Offer = lazy(() => import('./pages/offer'))
 import Offers from './pages/offers'
+import Faq from './pages/faq'
 
 const router = createBrowserRouter([
   {
@@ -22,6 +23,7 @@ const router = createBrowserRouter([
       { path: 'create', element: <Create /> },
       { path: 'offer/:chainId/:txHash', element: <Offer /> },
       { path: 'offers', element: <Offers /> },
+      { path: 'faq', element: <Faq /> },
     ],
   },
 ])

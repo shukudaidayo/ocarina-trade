@@ -8,6 +8,7 @@ function AppShell() {
 
   const isHome = location.pathname === '/'
   const isCreate = location.pathname === '/create'
+  const isFaq = location.pathname === '/faq'
 
   return (
     <div className="app">
@@ -16,8 +17,9 @@ function AppShell() {
           <Link to="/" className="logo">ocarina.trade</Link>
           <div className="nav-links">
             <Link to="/offers">Offers</Link>
+            <Link to="/faq">FAQ</Link>
           </div>
-          {!isHome && (wallet || !isCreate) && <appkit-button size="sm" balance="hide" />}
+          {!isHome && !isFaq && (wallet || !isCreate) && <appkit-button size="sm" balance="hide" />}
         </nav>
       </header>
       <main>

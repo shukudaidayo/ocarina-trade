@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { ethers } from 'ethers'
 import { useCreateFlow } from './context'
 import { ZONE_ADDRESSES, CHAINS } from '../../lib/constants'
 import { useAppKitNetwork } from '@reown/appkit/react'
@@ -25,6 +27,15 @@ const CHAIN_DESCRIPTIONS = {
   57073: 'Select Phygitals collectibles',
 }
 
+function getSwapUrl(chainId) {
+  const symbol = CHAINS[chainId]?.nativeSymbol || 'ETH'
+  if (chainId === 57073) {
+    return { url: 'https://velodrome.finance/swap?to=eth&chain1=57073', label: `Buy ${symbol} on Velodrome` }
+  }
+  const slugs = { 1: 'mainnet', 8453: 'base', 137: 'polygon' }
+  return { url: `https://app.uniswap.org/swap?chain=${slugs[chainId]}&outputCurrency=NATIVE`, label: `Buy ${symbol} on Uniswap` }
+}
+
 const DEPLOYED_CHAINS = Object.entries(ZONE_ADDRESSES)
   .filter(([, addr]) => addr !== null)
   .map(([id]) => Number(id))
@@ -32,6 +43,7 @@ const DEPLOYED_CHAINS = Object.entries(ZONE_ADDRESSES)
 export default function StepChain({ wallet }) {
   const { next, chainId, setChainId, setMakerAssets, setTakerAssets } = useCreateFlow()
   const { switchNetwork } = useAppKitNetwork()
+  const [noGasChain, setNoGasChain] = useState(null)
 
   const handleSelect = async (id) => {
     // If changing chain, clear any previously selected assets
@@ -52,8 +64,22 @@ export default function StepChain({ wallet }) {
       }
     }
 
+    // Check gas balance on selected chain
+    try {
+      const provider = new ethers.JsonRpcProvider(CHAINS[id].rpcUrl)
+      const balance = await provider.getBalance(wallet.address)
+      if (balance === 0n) {
+        setNoGasChain(id)
+        return
+      }
+    } catch {
+      // RPC error — don't block the user
+    }
+
     next()
   }
+
+  const swap = noGasChain ? getSwapUrl(noGasChain) : null
 
   return (
     <div className="wizard-screen">
@@ -74,6 +100,26 @@ export default function StepChain({ wallet }) {
           </button>
         ))}
       </div>
+
+      {noGasChain && (
+        <div className="modal-overlay" onClick={() => setNoGasChain(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>No {CHAINS[noGasChain]?.nativeSymbol || 'gas'} detected</h3>
+            <p>
+              Creating an offer requires a small amount of {CHAINS[noGasChain]?.nativeSymbol || 'gas'} for
+              transaction fees on {CHAINS[noGasChain]?.name}.
+            </p>
+            <p>
+              <a href={swap.url} target="_blank" rel="noopener noreferrer">{swap.label}</a>
+            </p>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => { setNoGasChain(null); next() }}>
+                Continue Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

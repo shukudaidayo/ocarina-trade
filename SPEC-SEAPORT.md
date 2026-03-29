@@ -161,15 +161,15 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 - **Web3**: ethers.js v6
 - **Wallet connection**: Reown AppKit (WalletConnect + injected providers)
 - **Styling**: Minimal custom CSS. No CSS framework.
-- **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection.
+- **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection. For chains without Alchemy NFT API support (currently Ink), falls back to the Blockscout v2 API (`/api/v2/addresses/{addr}/nft/collections` and `/api/v2/tokens/{contract}/instances`). If `VITE_ALCHEMY_API_KEY` is not set, the asset picker shows no wallet holdings — users can still add assets via manual contract address / token ID entry.
 - **NFT metadata**: Alchemy `getNFTMetadata` (pre-cached thumbnails, fast) with on-chain tokenURI + IPFS/HTTP/Arweave resolution as fallback
 - **ENS**: Forward resolution (name → address) for taker input, reverse resolution (address → name) for display throughout the UI. Uses mainnet provider since ENS lives on L1.
 - **Build**: Vite, with code splitting — heavy dependencies (AppKit, ethers, seaport-js) are lazy-loaded. The homepage renders with only React + Router (~75KB entry chunk). Wallet connection (AppKit) loads asynchronously in the background.
-- **Hosting**: Static site (GitHub Pages, Cloudflare Pages, or IPFS)
+- **Hosting**: Cloudflare Pages (SPA fallback for path-based routing)
 
 #### Pages / Routes
 
-Hash-based routing (works on static hosts, no server config needed).
+Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
 
 1. **`/`** - Home / landing page
    - Taker address input ("Who are you trading with?") with ENS resolution
@@ -189,13 +189,18 @@ Hash-based routing (works on static hosts, no server config needed).
    - Layout: "From [address/ENS]" headers for each side ("From Anyone" for open taker)
    - Display memo (if present) in the offer metadata section
    - Expiration shown only for open offers; hidden for filled/cancelled/expired
-   - For filled offers, show a "Fill tx" link to the block explorer transaction that settled the offer (found by querying Seaport `OrderFulfilled` events via Blockscout)
+   - For filled offers, show a "Fill tx" link to the block explorer transaction that settled the offer. Found by querying the Blockscout logs API for Seaport `OrderFulfilled` events (topic0: `0x9d9af8e38d66c62e2c12f0225249fd9d721c54b83f48d9352c97c6cacdcb6f31`) filtered by the offerer address (topic1) and zone address (topic3), then matching the orderHash in the decoded event data.
    - Validate order onchain via Seaport `getOrderStatus` (check if filled/cancelled)
    - If valid and user is eligible: "Accept Offer" button triggers a verification modal listing any unverified NFTs before proceeding. If all assets are verified, proceeds directly.
    - If user is maker: "Cancel Offer" button
    - Switch chain warning only shown for open offers
 
-4. **`/offers`** - Browse offers
+4. **`/faq`** - FAQ page
+   - Scrollable Q&A with sticky sidebar navigation (sidebar hidden on mobile)
+   - Sidebar highlights the current section based on scroll position
+   - No wallet connection UI on this page
+
+5. **`/offers`** - Browse offers
    - Chain selector (Ethereum / Base / Polygon / Ink / All Chains)
    - Category dropdown: "My Offers", "All Open", "All Offers"
    - Auto-promotion on load: starts on "All Offers", promotes to "All Open" if any open offers exist, promotes to "My Offers" if the connected wallet has matching orders. Promotion only happens on initial load — manual category changes are preserved.
@@ -217,7 +222,12 @@ The offer page fetches the tx receipt, parses the `OrderRegistered` event to ext
 
 #### Order Discovery / Offers Page
 
-The OTCZone contract emits `OrderRegistered` events when makers publish their orders. The offers page queries these events (with the same chunked block-range approach used currently) and cross-references with Seaport's `getOrderStatus` to determine which orders are still open, filled, or cancelled.
+The OTCZone contract emits `OrderRegistered` events when makers publish their orders. Event discovery uses a two-tier strategy:
+
+1. **Blockscout API** (primary): Queries the Blockscout transaction list API (`module=account&action=txlist`) for the OTCZone address, then filters for `registerOrder` calls and parses their logs. Blockscout provides full archive access with no API key and generous rate limits.
+2. **RPC fallback**: If Blockscout is unavailable, falls back to `eth_getLogs` with chunked block ranges (9,999 blocks per chunk on Polygon/Base/Ink, 49,999 on Ethereum) scanning from the deploy block forward.
+
+Events are cross-referenced with Seaport's `getOrderStatus` to determine which orders are still open, filled, or cancelled.
 
 - **My Offers**: Filter `OrderRegistered` events where `maker` or `taker` matches the connected wallet.
 - **All Open**: All `OrderRegistered` events, filtered client-side to exclude filled/cancelled/expired orders. Paginated.
@@ -349,7 +359,7 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 
 1. User enters counterparty address (or ENS name) on the homepage, or chooses "open offer"
 2. Connects wallet (auto-skipped if already connected)
-3. Selects chain (Ethereum / Base / Polygon / Ink) — triggers wallet network switch
+3. Selects chain (Ethereum / Base / Polygon / Ink) — triggers wallet network switch. If the wallet has zero native gas on the selected chain, a modal warns that gas is needed and links to Uniswap (or Velodrome for Ink) to buy the native token. User can dismiss with "Continue Anyway".
 4. Selects assets to offer from wallet (collectibles grid + cash list, with search/filter and manual entry fallback)
 5. Selects assets wanted in return (from taker's wallet if directed, or manual entry if open)
 6. Reviews summary: both sides, expiration (default 30 days, configurable), optional memo (max 280 bytes)
