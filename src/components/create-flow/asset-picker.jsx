@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { fetchCollections, fetchNFTsForContract } from '../../lib/alchemy'
 import { fetchMetadata } from '../../lib/metadata'
 import { WHITELISTED_ERC20, CHAINS } from '../../lib/constants'
+import verifiedTokens from '../../data/verified-tokens.json'
 import { Contract, JsonRpcProvider, formatUnits } from 'ethers'
 
 const ERC20_ABI = ['function balanceOf(address account) view returns (uint256)']
@@ -63,8 +64,10 @@ function looksLikeSpam(name) {
  * Normalize a collection from the getContractsForOwner API response.
  * Applies heuristic spam detection on top of the API's isSpam flag.
  */
-function normalizeCollection(col) {
-  const isVerified = col.safelistStatus === 'verified' || col.safelistStatus === 'approved'
+function normalizeCollection(col, chainId) {
+  const chainTokens = verifiedTokens[String(chainId)] || {}
+  const inStaticList = Object.keys(chainTokens).some((a) => a.toLowerCase() === col.address?.toLowerCase())
+  const isVerified = inStaticList || col.safelistStatus === 'verified' || col.safelistStatus === 'approved'
   let isSpam = col.isSpam || false
   // Verified collections are never spam; heuristic catches what API misses
   if (isVerified) {
@@ -237,7 +240,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
         const first = await fetchCollections(address, chainId)
         if (cancelled) return
         for (const col of first.collections) {
-          allCols[col.address.toLowerCase()] = normalizeCollection(col)
+          allCols[col.address.toLowerCase()] = normalizeCollection(col, chainId)
         }
         key = first.pageKey
 
@@ -259,7 +262,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
           }
 
           for (const col of page.collections) {
-            allCols[col.address.toLowerCase()] = normalizeCollection(col)
+            allCols[col.address.toLowerCase()] = normalizeCollection(col, chainId)
           }
           key = page.pageKey
         }
@@ -295,7 +298,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
       setCollections((prev) => {
         const updated = { ...prev }
         for (const col of more) {
-          updated[col.address.toLowerCase()] = normalizeCollection(col)
+          updated[col.address.toLowerCase()] = normalizeCollection(col, chainId)
         }
         return updated
       })
