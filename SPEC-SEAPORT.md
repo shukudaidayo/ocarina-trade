@@ -191,7 +191,7 @@ Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
    - Expiration shown only for open offers; hidden for filled/cancelled/expired
    - For filled offers, show a "Fill tx" link to the block explorer transaction that settled the offer. Found by querying the Blockscout logs API for Seaport `OrderFulfilled` events (topic0: `0x9d9af8e38d66c62e2c12f0225249fd9d721c54b83f48d9352c97c6cacdcb6f31`) filtered by the offerer address (topic1) and zone address (topic3), then matching the orderHash in the decoded event data.
    - Validate order onchain via Seaport `getOrderStatus` (check if filled/cancelled)
-   - If valid and user is eligible: "Accept Offer" button triggers a verification modal listing any unverified NFTs before proceeding. If all assets are verified, proceeds directly.
+   - If valid and user is eligible: "Accept Offer" button triggers a verification modal listing any unverified NFTs the taker is receiving (maker's offer items) before proceeding, with OpenSea links for review. If all received assets are verified, proceeds directly.
    - If user is maker: "Cancel Offer" button
    - Switch chain warning only shown for open offers
 
@@ -301,7 +301,8 @@ Key points:
 - Verified / Unverified / Suspicious indicators per token
 - Impostor detection (same name, different address)
 - Full contract addresses always visible, linked to Etherscan
-- Verification modal on trade acceptance: when a user clicks "Accept Trade", all NFTs are checked for verification status. If any are unverified, a modal lists them with Etherscan links and requires explicit confirmation ("Accept Anyway") before proceeding. Verified-only trades proceed directly.
+- Verification modal on trade acceptance: when a user clicks "Accept Trade", NFTs the taker is receiving (maker's offer items) are checked for verification status. If any are unverified, a modal lists them with OpenSea links and requires explicit confirmation ("Accept Anyway") before proceeding. Verified-only trades proceed directly.
+- Inline unverified warning on offer creation: the review step shows a yellow warning box on any unverified NFT, linking to OpenSea for verification before signing.
 - ERC-20 whitelist enforced at three layers (frontend, registration, fulfillment) — prevents impostor token scams
 
 ### Spam NFT Detection
@@ -380,7 +381,7 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 6. Counterparty reviews the trade
 7. Connects wallet
 8. Clicks "Accept Trade"
-9. UI checks all NFTs for verification status. If any are unverified, a modal warns the user and lists unverified assets with Etherscan links. User must confirm or cancel.
+9. UI checks NFTs the taker is receiving for verification status. If any are unverified, a modal warns the user and lists unverified assets with OpenSea links. User must confirm or cancel.
 10. UI shows a step-by-step checklist: one step per token approval, plus the final fulfillment action. Each step shows status (pending → signing → confirming → done/failed).
 11. UI walks through approval steps, then calls `fulfillOrder` — one transaction, atomic trade
 12. Assets are exchanged

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useOutletContext } from 'react-router'
 import { getOrderFromTx, getOrderStatus, fulfillOrder, cancelOrder, ensureApproval, deriveOrderStatus, getFillTxHash } from '../lib/contract'
 import { checkHoldings } from '../lib/balances'
-import { getVerificationStatus, getEtherscanUrl } from '../lib/verification'
+import { getVerificationStatus } from '../lib/verification'
 import { fetchMetadata } from '../lib/metadata'
 import AssetCard from '../components/asset-card'
 import AddressDisplay from '../components/address-display'
@@ -142,9 +142,8 @@ export default function Offer() {
   const checkVerificationAndFill = useCallback(async () => {
     if (!orderData) return
     const params = orderData.order.parameters
-    const allItems = [...params.offer, ...params.consideration]
-    // Only check NFTs (ERC-721 and ERC-1155), not ERC-20/native
-    const nftItems = allItems.filter((item) => {
+    // Only check NFTs the taker is receiving (maker's offer items), not what they're giving
+    const nftItems = params.offer.filter((item) => {
       const it = Number(item.itemType)
       return it === 2 || it === 3
     })
@@ -158,13 +157,14 @@ export default function Offer() {
           const meta = await fetchMetadata(Number(chainId), item.token, item.identifierOrCriteria, Number(item.itemType) === 3 ? 1 : 0)
           name = meta?.name
         } catch { /* ignore */ }
+        const openseaChain = { 1: 'ethereum', 8453: 'base', 137: 'matic', 57073: 'ink' }[Number(chainId)] || 'ethereum'
         unverified.push({
           token: item.token,
           tokenId: item.identifierOrCriteria,
           name: name || `#${item.identifierOrCriteria}`,
           status: v.status,
           message: v.message,
-          etherscanUrl: getEtherscanUrl(Number(chainId), item.token),
+          openseaUrl: `https://opensea.io/assets/${openseaChain}/${item.token}/${item.identifierOrCriteria}`,
         })
       }
     }
@@ -484,13 +484,13 @@ export default function Offer() {
         <div className="modal-overlay" onClick={() => setShowVerifyModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Unverified Assets</h3>
-            <p>The following assets could not be verified. Check the contract addresses to confirm they are the real assets before proceeding.</p>
+            <p>The following assets could not be verified. Review them on OpenSea to confirm they are the real assets before proceeding.</p>
             <div className="modal-asset-list">
               {unverifiedAssets.map((a, i) => (
                 <div key={i} className="modal-asset-row">
                   <span className="modal-asset-name">{a.name}</span>
-                  <a href={a.etherscanUrl} target="_blank" rel="noopener noreferrer" className="modal-asset-address">
-                    {a.token}
+                  <a href={a.openseaUrl} target="_blank" rel="noopener noreferrer" className="btn-link btn-sm">
+                    View on OpenSea
                   </a>
                   {a.status === 'suspicious' && a.message && (
                     <p className="text-danger" style={{ fontSize: '0.8rem', margin: '0.2rem 0 0' }}>{a.message}</p>

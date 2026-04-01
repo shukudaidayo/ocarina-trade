@@ -22,7 +22,7 @@ function resolveItemType(asset) {
   return 2
 }
 
-export default function AssetCard({ asset, chainId, compact = true }) {
+export default function AssetCard({ asset, chainId, compact = true, showUnverifiedWarning = false }) {
   const [metadata, setMetadata] = useState(null)
   const [loading, setLoading] = useState(true)
   const [verification, setVerification] = useState(null)
@@ -187,6 +187,13 @@ export default function AssetCard({ asset, chainId, compact = true }) {
                 {swapLabel}
               </a>
             )}
+          </div>
+        )}
+        {showUnverifiedWarning && isNFT && vStatus.status !== 'verified' && (
+          <div className="asset-card-warning">
+            Unverified asset: review on{' '}
+            {openseaUrl ? <a href={openseaUrl} target="_blank" rel="noopener noreferrer">OpenSea</a> : 'OpenSea'}{' '}
+            to confirm that this is the intended asset.
           </div>
         )}
       </div>

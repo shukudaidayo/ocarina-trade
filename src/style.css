@@ -435,6 +435,22 @@ footer {
   margin-top: 0.2rem;
 }
 
+.asset-card-warning {
+  margin-top: 0.4rem;
+  padding: 0.5rem 0.65rem;
+  background: #2a2210;
+  border: 1px solid #a84;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.asset-card-warning a {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 .asset-card-info {
   display: flex;
   flex-direction: column;
@@ -628,6 +644,7 @@ footer {
   margin-bottom: 1.5rem;
   font-size: 0.95rem;
   color: var(--text);
+  overflow-wrap: break-word;
 }
 
 .offer-meta p {

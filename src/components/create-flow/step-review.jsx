@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useCreateFlow } from './context'
 import { CHAINS } from '../../lib/constants'
-import AssetTally from './asset-tally'
 import AddressDisplay from '../address-display'
 import AssetCard from '../asset-card'
 
@@ -52,7 +51,7 @@ export default function StepReview({ wallet }) {
           <h3>You're offering</h3>
           <div className="review-assets">
             {makerAssets.map((asset, i) => (
-              <AssetCard key={i} asset={asset} chainId={chainId} compact={false} />
+              <AssetCard key={i} asset={asset} chainId={chainId} compact={false} showUnverifiedWarning />
             ))}
           </div>
         </div>
@@ -62,7 +61,7 @@ export default function StepReview({ wallet }) {
           <h3>You're receiving</h3>
           <div className="review-assets">
             {takerAssets.map((asset, i) => (
-              <AssetCard key={i} asset={asset} chainId={chainId} compact={false} />
+              <AssetCard key={i} asset={asset} chainId={chainId} compact={false} showUnverifiedWarning />
             ))}
           </div>
         </div>
