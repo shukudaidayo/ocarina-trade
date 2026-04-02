@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
-import { Link, useOutletContext } from 'react-router'
+import { useState, useEffect, useCallback } from 'react'
+import { Link, useOutletContext, useSearchParams } from 'react-router'
 import { queryOrderEvents, getOrderStatus, deriveOrderStatus } from '../lib/contract'
 import { checkHoldings } from '../lib/balances'
 import { fetchMetadata } from '../lib/metadata'
+import { resolveENSName } from '../lib/ens'
 import AddressDisplay from '../components/address-display'
 import { ZONE_ADDRESSES, CHAINS, WHITELISTED_ERC20 } from '../lib/constants'
 import { formatUnits } from 'ethers'
@@ -15,56 +16,89 @@ const DEPLOYED_CHAINS = Object.entries(ZONE_ADDRESSES)
   .filter(([, addr]) => addr !== null)
   .map(([id]) => Number(id))
 
+// Map chain names to chain IDs for URL params
+const CHAIN_NAME_TO_ID = {}
+for (const [id, chain] of Object.entries(CHAINS)) {
+  CHAIN_NAME_TO_ID[chain.name.toLowerCase()] = Number(id)
+}
+
+function parseChainParam(value) {
+  if (!value || value === 'all') return 'all'
+  // Try as chain ID first
+  const asNum = Number(value)
+  if (DEPLOYED_CHAINS.includes(asNum)) return String(asNum)
+  // Try as chain name
+  const id = CHAIN_NAME_TO_ID[value.toLowerCase()]
+  if (id && DEPLOYED_CHAINS.includes(id)) return String(id)
+  return 'all'
+}
+
 export default function Offers() {
   const wallet = useOutletContext()
-  const [chainFilter, setChainFilter] = useState('all')
-  const [category, setCategory] = useState('all')
-  const [autoPromoted, setAutoPromoted] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // Read filters from URL
+  const chainFilter = parseChainParam(searchParams.get('chain'))
+  const category = searchParams.get('category') || 'open'
+  const addressParam = searchParams.get('address') || ''
+  const collectionParam = searchParams.get('collection') || ''
+
+  // Resolved address filter (from ENS or direct)
+  const [resolvedAddress, setResolvedAddress] = useState('')
+  // Local input state for text fields (synced to URL on blur/enter)
+  const [addressInput, setAddressInput] = useState(addressParam)
+  const [collectionInput, setCollectionInput] = useState(collectionParam)
+
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [partial, setPartial] = useState(false)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
-  // After orders load, auto-promote: My Offers > All Open > All Trades
+  // Helper to update a single URL param without clobbering others
+  const setParam = useCallback((key, value) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (!value) {
+        next.delete(key)
+      } else {
+        next.set(key, value)
+      }
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  // Resolve ENS name for address filter
   useEffect(() => {
-    if (autoPromoted || loading || orders.length === 0) return
-    if (wallet) {
-      const userAddr = wallet.address.toLowerCase()
-      const hasMine = orders.some((o) => {
-        const isMaker = o.maker.toLowerCase() === userAddr
-        const isTaker = o.taker !== ZERO_ADDRESS && o.taker.toLowerCase() === userAddr
-        return isMaker || isTaker
-      })
-      if (hasMine) { setCategory('mine'); setAutoPromoted(true); return }
+    if (!addressParam) { setResolvedAddress(''); return }
+    if (addressParam.startsWith('0x') && addressParam.length === 42) {
+      setResolvedAddress(addressParam.toLowerCase())
+      return
     }
-    const hasOpen = orders.some((o) => o.status === 'open')
-    if (hasOpen) setCategory('open')
-    setAutoPromoted(true)
-  }, [wallet, loading, orders, autoPromoted])
+    // Try ENS resolution
+    let cancelled = false
+    resolveENSName(addressParam).then((addr) => {
+      if (cancelled) return
+      setResolvedAddress(addr ? addr.toLowerCase() : '')
+    })
+    return () => { cancelled = true }
+  }, [addressParam])
 
+  // Sync local inputs when URL params change externally
+  useEffect(() => { setAddressInput(addressParam) }, [addressParam])
+  useEffect(() => { setCollectionInput(collectionParam) }, [collectionParam])
+
+  // Load all chains once on mount
   useEffect(() => {
-    setOrders([])
-    setLoading(true)
-    setError(null)
-    setPartial(false)
-
-    const chainsToLoad = chainFilter === 'all'
-      ? DEPLOYED_CHAINS
-      : [Number(chainFilter)]
-
     let cancelled = false
     async function load() {
       try {
-        // Load all selected chains in parallel
         const chainResults = await Promise.all(
-          chainsToLoad.map(async (cid) => {
+          DEPLOYED_CHAINS.map(async (cid) => {
             const registrations = await queryOrderEvents(cid, ZONE_ADDRESSES[cid])
             const isPartial = registrations._partial
-            // Tag each order with its chain
             const tagged = registrations.map((r) => ({ ...r, chainId: cid }))
 
-            // Fetch Seaport status for each order (batched to avoid RPC rate limits)
             const BATCH_SIZE = 3
             const enriched = []
             for (let i = 0; i < tagged.length; i += BATCH_SIZE) {
@@ -92,7 +126,6 @@ export default function Offers() {
 
         if (cancelled) return
 
-        // Merge results from all chains, most recent first
         const allOrders = chainResults.flat()
         allOrders.reverse()
         const anyPartial = chainResults.some((r) => r._partial)
@@ -107,7 +140,7 @@ export default function Offers() {
     }
     load()
     return () => { cancelled = true }
-  }, [chainFilter])
+  }, [])
 
   // Check maker holdings for open offers
   useEffect(() => {
@@ -148,20 +181,38 @@ export default function Offers() {
   // Reset pagination when filters change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
-  }, [category])
+  }, [chainFilter, category, resolvedAddress, collectionParam])
 
-  const userAddr = wallet?.address?.toLowerCase()
+  const normalizedCollection = collectionParam ? collectionParam.toLowerCase() : ''
 
   const filtered = orders.filter((o) => {
-    if (category === 'mine') {
-      if (!userAddr) return false
-      const isMaker = o.maker.toLowerCase() === userAddr
-      const isTaker = o.taker !== ZERO_ADDRESS && o.taker.toLowerCase() === userAddr
-      return isMaker || isTaker
+    // Chain filter
+    if (chainFilter !== 'all' && o.chainId !== Number(chainFilter)) return false
+
+    // Status filter
+    if (category === 'open') {
+      if (o.status !== 'open') return false
     }
-    if (category === 'open') return o.status === 'open'
-    if (category === 'all') return true
-    return false
+
+    // Address filter — match maker or taker
+    if (resolvedAddress) {
+      const isMaker = o.maker.toLowerCase() === resolvedAddress
+      const isTaker = o.taker !== ZERO_ADDRESS && o.taker.toLowerCase() === resolvedAddress
+      if (!isMaker && !isTaker) return false
+    }
+
+    // Collection filter — match if any offer or consideration item involves this contract
+    if (normalizedCollection) {
+      const params = o.order?.parameters
+      if (!params) return false
+      const allItems = [...(params.offer || []), ...(params.consideration || [])]
+      const hasCollection = allItems.some((item) =>
+        item.token && item.token.toLowerCase() === normalizedCollection
+      )
+      if (!hasCollection) return false
+    }
+
+    return true
   })
 
   if (category === 'open') {
@@ -196,7 +247,7 @@ export default function Offers() {
       <div className="offers-filters">
         <label>
           Chain
-          <select value={chainFilter} onChange={(e) => setChainFilter(e.target.value)}>
+          <select value={chainFilter} onChange={(e) => setParam('chain', e.target.value)}>
             <option value="all">All Chains</option>
             {DEPLOYED_CHAINS.map((id) => (
               <option key={id} value={id}>{CHAINS[id]?.name || `Chain ${id}`}</option>
@@ -204,12 +255,44 @@ export default function Offers() {
           </select>
         </label>
         <label>
-          Category
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="mine">My Offers</option>
-            <option value="open">All Open</option>
-            <option value="all">All Offers</option>
+          Status
+          <select value={category} onChange={(e) => setParam('category', e.target.value)}>
+            <option value="open">Open</option>
+            <option value="all">All</option>
           </select>
+        </label>
+        <label>
+          Address
+          <span className="offers-address-input">
+            <input
+              type="text"
+              placeholder="0x... or ENS name"
+              value={addressInput}
+              onChange={(e) => { setAddressInput(e.target.value); if (!e.target.value) setParam('address', '') }}
+              onPaste={(e) => { const v = e.clipboardData.getData('text').trim(); if (v) { setAddressInput(v); setParam('address', v) } }}
+              onBlur={() => setParam('address', addressInput.trim())}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.target.blur() } }}
+            />
+            {wallet && (
+              <button
+                type="button"
+                className="offers-me-btn"
+                onClick={() => { setAddressInput(wallet.address); setParam('address', wallet.address) }}
+              >Me</button>
+            )}
+          </span>
+        </label>
+        <label>
+          Collection
+          <input
+            type="text"
+            placeholder="Contract address"
+            value={collectionInput}
+            onChange={(e) => { setCollectionInput(e.target.value); if (!e.target.value) setParam('collection', '') }}
+            onPaste={(e) => { const v = e.clipboardData.getData('text').trim(); if (v) { setCollectionInput(v); setParam('collection', v) } }}
+            onBlur={() => setParam('collection', collectionInput.trim())}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.target.blur() } }}
+          />
         </label>
       </div>
 
@@ -217,15 +300,8 @@ export default function Offers() {
       {error && <p className="form-error">{error}</p>}
       {partial && !loading && <p className="text-muted">Only showing recent offers. Older offers may be missing.</p>}
 
-      {!loading && !error && category === 'mine' && !wallet && (
-        <p className="text-muted">Connect your wallet to see your offers.</p>
-      )}
-
-      {!loading && !error && filtered.length === 0 && (category !== 'mine' || wallet) && (
-        <p className="text-muted">
-          {category === 'mine' ? 'No offers involving your wallet.' :
-           category === 'open' ? 'No open offers.' : 'No offers found.'}
-        </p>
+      {!loading && !error && filtered.length === 0 && (
+        <p className="text-muted">No offers found.</p>
       )}
 
       {!loading && visible.length > 0 && (

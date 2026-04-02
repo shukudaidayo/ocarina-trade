@@ -1019,9 +1019,16 @@ footer {
 
 /* Offers page */
 .offers-filters {
-  display: flex;
-  gap: 1.5rem;
+  display: grid;
+  grid-template-columns: auto auto 1fr 1fr;
+  gap: 1rem 1.5rem;
   margin-bottom: 1.5rem;
+}
+
+@media (max-width: 600px) {
+  .offers-filters {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 .offers-filters label {
@@ -1032,7 +1039,8 @@ footer {
   color: var(--text-muted);
 }
 
-.offers-filters select {
+.offers-filters select,
+.offers-filters input[type="text"] {
   padding: 0.4rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1040,12 +1048,44 @@ footer {
   color: var(--text);
   font-size: 0.9rem;
   font-family: inherit;
+}
+
+.offers-filters select {
   cursor: pointer;
 }
 
-.offers-filters select:focus {
+.offers-filters input[type="text"] {
+  min-width: 0;
+  width: 100%;
+}
+
+.offers-filters select:focus,
+.offers-filters input[type="text"]:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.offers-address-input {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.offers-me-btn {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.offers-me-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .tab {
