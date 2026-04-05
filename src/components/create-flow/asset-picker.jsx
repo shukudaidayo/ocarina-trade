@@ -3,9 +3,34 @@ import { fetchCollections, fetchNFTsForContract } from '../../lib/alchemy'
 import { fetchMetadata } from '../../lib/metadata'
 import { WHITELISTED_ERC20, CHAINS } from '../../lib/constants'
 import verifiedTokens from '../../data/verified-tokens.json'
+import mergedCollections from '../../data/merged-collections.json'
 import { Contract, JsonRpcProvider, formatUnits } from 'ethers'
 
 const ERC20_ABI = ['function balanceOf(address account) view returns (uint256)']
+
+// Local fallback images for merged collections
+const COLLECTION_IMAGES = {
+  '0xd4416b13d2b3a9abae7acd5d6c2bbdbe25686401': new URL('../../assets/collections/ens.png', import.meta.url).href,
+}
+
+/**
+ * Build lookup maps from merged-collections.json.
+ * aliasToCanonical: alias address → canonical (primary) address
+ * canonicalMeta: canonical address → { name, aliases }
+ */
+function buildMergedLookups(chainId) {
+  const chainMerges = mergedCollections[String(chainId)] || {}
+  const aliasToCanonical = {}
+  const canonicalMeta = {}
+  for (const [canonical, meta] of Object.entries(chainMerges)) {
+    const canonLower = canonical.toLowerCase()
+    canonicalMeta[canonLower] = meta
+    for (const alias of meta.aliases || []) {
+      aliasToCanonical[alias.toLowerCase()] = canonLower
+    }
+  }
+  return { aliasToCanonical, canonicalMeta }
+}
 
 // Patterns that strongly indicate spam NFT collections
 const SPAM_PATTERNS = [
@@ -83,6 +108,52 @@ function normalizeCollection(col, chainId) {
     totalBalance: col.totalBalance,
     isSpam,
     isVerified,
+  }
+}
+
+/**
+ * Apply overrides from merged-collections config onto a collection entry.
+ */
+function applyMergedMeta(col, meta, canonicalAddr) {
+  if (!meta) return
+  if (meta.name) col.name = meta.name
+  const localImg = COLLECTION_IMAGES[canonicalAddr]
+  if (localImg) col.thumbnail = col.thumbnail || localImg
+  if (meta.verified) { col.isVerified = true; col.isSpam = false }
+  col._aliases = meta.aliases?.map((a) => a.toLowerCase()) || []
+}
+
+/**
+ * Merge alias collections into their canonical entry.
+ * Mutates the collections object: removes alias keys, combines counts into canonical.
+ */
+function applyCollectionMerges(cols, chainId) {
+  const { aliasToCanonical, canonicalMeta } = buildMergedLookups(chainId)
+  for (const addr of Object.keys(cols)) {
+    const canonical = aliasToCanonical[addr]
+    if (!canonical) continue
+    // Merge into canonical entry (create if not present yet)
+    if (cols[canonical]) {
+      cols[canonical].tokenCount = String(
+        (Number(cols[canonical].tokenCount) || 0) + (Number(cols[addr].tokenCount) || 0)
+      )
+      cols[canonical].totalBalance = String(
+        (Number(cols[canonical].totalBalance) || 0) + (Number(cols[addr].totalBalance) || 0)
+      )
+      // Prefer existing thumbnail, fall back to alias thumbnail
+      cols[canonical].thumbnail = cols[canonical].thumbnail || cols[addr].thumbnail
+    } else {
+      cols[canonical] = { ...cols[addr] }
+    }
+    // Apply canonical metadata overrides
+    const meta = canonicalMeta[canonical]
+    applyMergedMeta(cols[canonical], meta, canonical)
+    delete cols[addr]
+  }
+  // Also apply overrides if canonical exists but no alias was seen
+  for (const [addr, col] of Object.entries(cols)) {
+    const meta = canonicalMeta[addr]
+    if (meta && !col._aliases) applyMergedMeta(col, meta, addr)
   }
 }
 
@@ -181,7 +252,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
   const [quantity, setQuantity] = useState('1')
   const [openCollection, setOpenCollection] = useState(null)
   const [fullCollectionNfts, setFullCollectionNfts] = useState(null)
-  const [collectionPageKey, setCollectionPageKey] = useState(null)
+  const [collectionPageKeys, setCollectionPageKeys] = useState({}) // { contractAddr: pageKey }
   const [loadingCollection, setLoadingCollection] = useState(false)
   const [loadingMoreNfts, setLoadingMoreNfts] = useState(false)
   const [showSpam, setShowSpam] = useState(false)
@@ -194,7 +265,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
         if (openCollection) {
           setOpenCollection(null)
           setFullCollectionNfts(null)
-          setCollectionPageKey(null)
+          setCollectionPageKeys({})
           return true
         }
         return false
@@ -212,37 +283,67 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
   })()
   const effectiveDrillAddr = openCollection || autoExpandAddr || null
 
-  // When drilling into a collection, fetch first page of tokens
+  // Get all contract addresses for a collection (canonical + aliases)
+  const getDrillContracts = useCallback((addr) => {
+    if (!addr) return []
+    const col = collections[addr]
+    const contracts = [addr]
+    if (col?._aliases) {
+      for (const alias of col._aliases) {
+        if (!contracts.includes(alias)) contracts.push(alias)
+      }
+    }
+    return contracts
+  }, [collections])
+
+  // When drilling into a collection, fetch first page from all contracts
   useEffect(() => {
     if (!effectiveDrillAddr || !address || !chainId) {
       setFullCollectionNfts(null)
-      setCollectionPageKey(null)
+      setCollectionPageKeys({})
       return
     }
     let cancelled = false
     setLoadingCollection(true)
-    fetchNFTsForContract(address, chainId, effectiveDrillAddr)
-      .then(({ nfts, pageKey: nextKey }) => {
-        if (!cancelled) {
-          setFullCollectionNfts(nfts)
-          setCollectionPageKey(nextKey)
+    const contracts = getDrillContracts(effectiveDrillAddr)
+    Promise.all(contracts.map((c) => fetchNFTsForContract(address, chainId, c)))
+      .then((results) => {
+        if (cancelled) return
+        const allNfts = []
+        const keys = {}
+        for (let i = 0; i < contracts.length; i++) {
+          allNfts.push(...results[i].nfts)
+          if (results[i].pageKey) keys[contracts[i]] = results[i].pageKey
         }
+        setFullCollectionNfts(allNfts)
+        setCollectionPageKeys(keys)
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoadingCollection(false) })
     return () => { cancelled = true }
-  }, [effectiveDrillAddr, address, chainId])
+  }, [effectiveDrillAddr, address, chainId, getDrillContracts])
+
+  const hasMoreNfts = Object.keys(collectionPageKeys).length > 0
 
   const loadMoreNfts = useCallback(async () => {
-    if (!collectionPageKey || loadingMoreNfts || !effectiveDrillAddr) return
+    if (!hasMoreNfts || loadingMoreNfts) return
     setLoadingMoreNfts(true)
     try {
-      const { nfts, pageKey: nextKey } = await fetchNFTsForContract(address, chainId, effectiveDrillAddr, collectionPageKey)
-      setFullCollectionNfts((prev) => [...(prev || []), ...nfts])
-      setCollectionPageKey(nextKey)
+      const entries = Object.entries(collectionPageKeys)
+      const results = await Promise.all(
+        entries.map(([contract, pk]) => fetchNFTsForContract(address, chainId, contract, pk))
+      )
+      const newNfts = []
+      const newKeys = {}
+      for (let i = 0; i < entries.length; i++) {
+        newNfts.push(...results[i].nfts)
+        if (results[i].pageKey) newKeys[entries[i][0]] = results[i].pageKey
+      }
+      setFullCollectionNfts((prev) => [...(prev || []), ...newNfts])
+      setCollectionPageKeys(newKeys)
     } catch { /* ignore */ }
     finally { setLoadingMoreNfts(false) }
-  }, [collectionPageKey, loadingMoreNfts, effectiveDrillAddr, address, chainId])
+  }, [collectionPageKeys, hasMoreNfts, loadingMoreNfts, address, chainId])
 
   // Fetch collections via getContractsForOwner
   useEffect(() => {
@@ -291,8 +392,9 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
           key = page.pageKey
         }
 
-        // Compute sorted order before first render to avoid jitter
+        // Merge aliased collections and sort before first render
         if (!cancelled) {
+          applyCollectionMerges(allCols, chainId)
           const sorted = sortCollectionEntries(Object.entries(allCols))
           setInitialKeys(sorted.map(([k]) => k))
           setCollections({ ...allCols })
@@ -335,9 +437,33 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
       }
 
       if (Object.keys(normalized).length > 0) {
-        const pageEntries = sortCollectionEntries(Object.entries(normalized))
-        setInitialKeys((prev) => prev ? [...prev, ...pageEntries.map(([k]) => k)] : null)
-        setCollections((prev) => ({ ...prev, ...normalized }))
+        applyCollectionMerges(normalized, chainId)
+        // Also merge into existing collections (alias in new batch, canonical in old)
+        setCollections((prev) => {
+          const merged = { ...prev }
+          const { aliasToCanonical } = buildMergedLookups(chainId)
+          for (const [addr, col] of Object.entries(normalized)) {
+            const canonical = aliasToCanonical[addr]
+            if (canonical && merged[canonical]) {
+              merged[canonical] = {
+                ...merged[canonical],
+                tokenCount: String((Number(merged[canonical].tokenCount) || 0) + (Number(col.tokenCount) || 0)),
+                totalBalance: String((Number(merged[canonical].totalBalance) || 0) + (Number(col.totalBalance) || 0)),
+              }
+            } else {
+              merged[addr] = col
+            }
+          }
+          return merged
+        })
+        // Only add keys for entries that weren't merged into existing canonical
+        const { aliasToCanonical } = buildMergedLookups(chainId)
+        const newKeys = Object.keys(normalized).filter((k) => !aliasToCanonical[k])
+        if (newKeys.length > 0) {
+          const newEntries = newKeys.map((k) => [k, normalized[k]])
+          sortCollectionEntries(newEntries)
+          setInitialKeys((prev) => prev ? [...prev, ...newEntries.map(([k]) => k)] : null)
+        }
       }
       setPageKey(key)
     } catch (err) {
@@ -511,7 +637,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
             <button
               type="button"
               className="btn-link collection-back"
-              onClick={() => { setOpenCollection(null); setFullCollectionNfts(null); setCollectionPageKey(null) }}
+              onClick={() => { setOpenCollection(null); setFullCollectionNfts(null); setCollectionPageKeys({}) }}
             >
               &larr; All collections
             </button>
@@ -551,7 +677,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
               )
             })}
           </div>
-          {collectionPageKey && (
+          {hasMoreNfts && (
             <button
               type="button"
               className="btn btn-secondary btn-sm"
