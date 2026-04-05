@@ -181,7 +181,9 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
   const [quantity, setQuantity] = useState('1')
   const [openCollection, setOpenCollection] = useState(null)
   const [fullCollectionNfts, setFullCollectionNfts] = useState(null)
+  const [collectionPageKey, setCollectionPageKey] = useState(null)
   const [loadingCollection, setLoadingCollection] = useState(false)
+  const [loadingMoreNfts, setLoadingMoreNfts] = useState(false)
   const [showSpam, setShowSpam] = useState(false)
   const [initialKeys, setInitialKeys] = useState(null)
 
@@ -192,6 +194,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
         if (openCollection) {
           setOpenCollection(null)
           setFullCollectionNfts(null)
+          setCollectionPageKey(null)
           return true
         }
         return false
@@ -209,22 +212,37 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
   })()
   const effectiveDrillAddr = openCollection || autoExpandAddr || null
 
-  // When drilling into a collection, fetch all tokens for that contract
+  // When drilling into a collection, fetch first page of tokens
   useEffect(() => {
     if (!effectiveDrillAddr || !address || !chainId) {
       setFullCollectionNfts(null)
+      setCollectionPageKey(null)
       return
     }
     let cancelled = false
     setLoadingCollection(true)
     fetchNFTsForContract(address, chainId, effectiveDrillAddr)
-      .then((fetched) => {
-        if (!cancelled) setFullCollectionNfts(fetched)
+      .then(({ nfts, pageKey: nextKey }) => {
+        if (!cancelled) {
+          setFullCollectionNfts(nfts)
+          setCollectionPageKey(nextKey)
+        }
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoadingCollection(false) })
     return () => { cancelled = true }
   }, [effectiveDrillAddr, address, chainId])
+
+  const loadMoreNfts = useCallback(async () => {
+    if (!collectionPageKey || loadingMoreNfts || !effectiveDrillAddr) return
+    setLoadingMoreNfts(true)
+    try {
+      const { nfts, pageKey: nextKey } = await fetchNFTsForContract(address, chainId, effectiveDrillAddr, collectionPageKey)
+      setFullCollectionNfts((prev) => [...(prev || []), ...nfts])
+      setCollectionPageKey(nextKey)
+    } catch { /* ignore */ }
+    finally { setLoadingMoreNfts(false) }
+  }, [collectionPageKey, loadingMoreNfts, effectiveDrillAddr, address, chainId])
 
   // Fetch collections via getContractsForOwner
   useEffect(() => {
@@ -250,10 +268,10 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
         }
         key = first.pageKey
 
-        // Auto-fetch until 50 non-spam collections
+        // Auto-fetch until 250 non-spam collections
         while (key && !cancelled) {
           const nonSpamCount = Object.values(allCols).filter((c) => !c.isSpam).length
-          if (nonSpamCount >= 50) break
+          if (nonSpamCount >= 250) break
 
           const prevKey = key
           const page = await fetchCollections(address, chainId, key)
@@ -295,20 +313,33 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
     if (!pageKey || loadingMore || paginationBroken) return
     setLoadingMore(true)
     try {
-      const { collections: more, pageKey: nextKey } = await fetchCollections(address, chainId, pageKey)
-      if (more.length === 0) {
-        // Pagination failed — keep pageKey but stop trying
-        setPaginationBroken(true)
-        return
-      }
-      setCollections((prev) => {
-        const updated = { ...prev }
-        for (const col of more) {
-          updated[col.address.toLowerCase()] = normalizeCollection(col, chainId)
+      let key = pageKey
+      const normalized = {}
+      let nonSpamCount = 0
+
+      while (key && nonSpamCount < 250) {
+        const prevKey = key
+        const { collections: more, pageKey: nextKey } = await fetchCollections(address, chainId, key)
+        if (more.length === 0) {
+          key = prevKey
+          setPaginationBroken(true)
+          break
         }
-        return updated
-      })
-      setPageKey(nextKey)
+        for (const col of more) {
+          const norm = normalizeCollection(col, chainId)
+          normalized[col.address.toLowerCase()] = norm
+          if (!norm.isSpam) nonSpamCount++
+        }
+        key = nextKey
+        if (!key) break
+      }
+
+      if (Object.keys(normalized).length > 0) {
+        const pageEntries = sortCollectionEntries(Object.entries(normalized))
+        setInitialKeys((prev) => prev ? [...prev, ...pageEntries.map(([k]) => k)] : null)
+        setCollections((prev) => ({ ...prev, ...normalized }))
+      }
+      setPageKey(key)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -409,7 +440,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
     for (const k of initialKeys) {
       if (entryMap[k]) ordered.push([k, entryMap[k]])
     }
-    // New keys (from Load More) appended at end
+    // New keys (shouldn't normally exist since loadMore adds to initialKeys)
     for (const [k, v] of entries) {
       if (!initialKeys.includes(k)) ordered.push([k, v])
     }
@@ -461,6 +492,8 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
         />
       )}
 
+      {loading && <div className="spinner-center"><span className="spinner" /></div>}
+
       {error && <p className="form-error">{error}</p>}
 
       {isOwnWallet && !loading && !error && Object.keys(collections).length === 0 && (
@@ -478,12 +511,13 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
             <button
               type="button"
               className="btn-link collection-back"
-              onClick={() => { setOpenCollection(null); setFullCollectionNfts(null) }}
+              onClick={() => { setOpenCollection(null); setFullCollectionNfts(null); setCollectionPageKey(null) }}
             >
               &larr; All collections
             </button>
           )}
           <h4 className="collection-drill-title">{drillCollection.name}</h4>
+          {loadingCollection && <div className="spinner-center"><span className="spinner" /></div>}
           <div className="nft-grid">
             {drillCollection.nfts.map((nft) => {
               const sel = isSelected(nft.contract, nft.tokenId)
@@ -517,6 +551,17 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
               )
             })}
           </div>
+          {collectionPageKey && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={loadMoreNfts}
+              disabled={loadingMoreNfts}
+              style={{ display: 'block', marginTop: '0.5rem' }}
+            >
+              {loadingMoreNfts ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Loading...</> : 'Load More'}
+            </button>
+          )}
         </div>
       )}
 
@@ -568,7 +613,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
             disabled={loadingMore}
             style={{ display: 'block', marginTop: '0.5rem' }}
           >
-            {loadingMore ? 'Loading...' : 'Load More Collections'}
+            {loadingMore ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Loading...</> : 'Load More Collections'}
           </button>
         )
       )}

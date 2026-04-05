@@ -19,6 +19,7 @@ export default function StepWant({ wallet }) {
     if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
       setTaker(trimmed)
       setTakerENS(null)
+      setTakerAssets([])
       setEditingTaker(false)
       setTakerInput('')
       return
@@ -32,6 +33,7 @@ export default function StepWant({ wallet }) {
         if (addr) {
           setTaker(addr)
           setTakerENS(trimmed)
+          setTakerAssets([])
           setEditingTaker(false)
           setTakerInput('')
         } else {

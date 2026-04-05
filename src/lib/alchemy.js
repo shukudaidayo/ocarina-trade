@@ -59,45 +59,38 @@ export async function fetchCollections(address, chainId, pageKey = null) {
 }
 
 /**
- * Fetch all NFTs owned by an address for a specific contract.
- * Pages through all results automatically.
+ * Fetch a page of NFTs owned by an address for a specific contract.
+ * Returns { nfts: [...], pageKey: string|null }
  */
-export async function fetchNFTsForContract(address, chainId, contractAddress) {
+export async function fetchNFTsForContract(address, chainId, contractAddress, pageKey = null) {
   const bsApi = blockscoutApi(chainId)
-  if (bsApi) return fetchNFTsForContractBlockscout(bsApi, address, contractAddress)
+  if (bsApi) return fetchNFTsForContractBlockscout(bsApi, address, contractAddress, pageKey)
 
-  if (!ALCHEMY_API_KEY) return []
+  if (!ALCHEMY_API_KEY) return { nfts: [], pageKey: null }
 
   const network = CHAIN_NETWORKS[chainId]
-  if (!network) return []
+  if (!network) return { nfts: [], pageKey: null }
 
-  let allNfts = []
-  let pageKey = null
+  let url = `https://${network}.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}/getNFTsForOwner?owner=${address}&withMetadata=true&pageSize=100&contractAddresses[]=${contractAddress}`
+  if (pageKey) url += `&pageKey=${encodeURIComponent(pageKey)}`
 
-  do {
-    let url = `https://${network}.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}/getNFTsForOwner?owner=${address}&withMetadata=true&pageSize=100&contractAddresses[]=${contractAddress}`
-    if (pageKey) url += `&pageKey=${encodeURIComponent(pageKey)}`
+  const res = await fetch(url)
+  if (!res.ok) return { nfts: [], pageKey: null }
 
-    const res = await fetch(url)
-    if (!res.ok) break
+  const data = await res.json()
+  const nfts = (data.ownedNfts || []).map((nft) => ({
+    contract: nft.contract?.address,
+    contractName: nft.collection?.name || nft.contract?.openSeaMetadata?.collectionName || nft.contract?.name || '',
+    tokenType: nft.tokenType || nft.contract?.tokenType || 'ERC721',
+    tokenId: nft.tokenId,
+    name: nft.name || `#${nft.tokenId}`,
+    image: nft.image?.thumbnailUrl || nft.image?.cachedUrl || null,
+    balance: String(nft.balance ?? '1'),
+    isSpam: nft.contract?.isSpam || false,
+    safelistStatus: nft.contract?.openSeaMetadata?.safelistRequestStatus || null,
+  }))
 
-    const data = await res.json()
-    const raw = data.ownedNfts || []
-    allNfts.push(...raw.map((nft) => ({
-      contract: nft.contract?.address,
-      contractName: nft.collection?.name || nft.contract?.openSeaMetadata?.collectionName || nft.contract?.name || '',
-      tokenType: nft.tokenType || nft.contract?.tokenType || 'ERC721',
-      tokenId: nft.tokenId,
-      name: nft.name || `#${nft.tokenId}`,
-      image: nft.image?.thumbnailUrl || nft.image?.cachedUrl || null,
-      balance: String(nft.balance ?? '1'),
-      isSpam: nft.contract?.isSpam || false,
-      safelistStatus: nft.contract?.openSeaMetadata?.safelistRequestStatus || null,
-    })))
-    pageKey = data.pageKey || null
-  } while (pageKey)
-
-  return allNfts
+  return { nfts, pageKey: data.pageKey || null }
 }
 
 // --- Blockscout v2 fallback for chains without Alchemy NFT API ---
@@ -134,38 +127,32 @@ async function fetchCollectionsBlockscout(apiBase, address, pageKey = null) {
   return { collections, pageKey: nextKey, totalCount: collections.length }
 }
 
-async function fetchNFTsForContractBlockscout(apiBase, address, contractAddress) {
-  let allNfts = []
-  let nextParams = null
+async function fetchNFTsForContractBlockscout(apiBase, address, contractAddress, pageKey = null) {
+  let url = `${apiBase}/tokens/${contractAddress}/instances?holder_address_hash=${address}`
+  if (pageKey) {
+    const params = JSON.parse(pageKey)
+    const qs = new URLSearchParams(params).toString()
+    url += `&${qs}`
+  }
 
-  do {
-    let url = `${apiBase}/tokens/${contractAddress}/instances?holder_address_hash=${address}`
-    if (nextParams) {
-      const qs = new URLSearchParams(nextParams).toString()
-      url += `&${qs}`
-    }
+  const res = await fetch(url)
+  if (!res.ok) return { nfts: [], pageKey: null }
 
-    const res = await fetch(url)
-    if (!res.ok) break
+  const data = await res.json()
+  const nfts = (data.items || []).map((inst) => ({
+    contract: contractAddress,
+    contractName: inst.token?.name || '',
+    tokenType: (inst.token_type || inst.token?.type || 'ERC-721').replace('-', ''),
+    tokenId: inst.id,
+    name: inst.metadata?.name || `#${inst.id}`,
+    image: inst.image_url || inst.metadata?.image || null,
+    balance: String(inst.value ?? '1'),
+    isSpam: false,
+    safelistStatus: null,
+  }))
 
-    const data = await res.json()
-    for (const inst of data.items || []) {
-      allNfts.push({
-        contract: contractAddress,
-        contractName: inst.token?.name || '',
-        tokenType: (inst.token_type || inst.token?.type || 'ERC-721').replace('-', ''),
-        tokenId: inst.id,
-        name: inst.metadata?.name || `#${inst.id}`,
-        image: inst.image_url || inst.metadata?.image || null,
-        balance: String(inst.value ?? '1'),
-        isSpam: false,
-        safelistStatus: null,
-      })
-    }
-    nextParams = data.next_page_params || null
-  } while (nextParams)
-
-  return allNfts
+  const nextKey = data.next_page_params ? JSON.stringify(data.next_page_params) : null
+  return { nfts, pageKey: nextKey }
 }
 
 // Cache contract metadata to avoid repeated API calls
