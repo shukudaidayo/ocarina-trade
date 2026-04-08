@@ -14,6 +14,7 @@ const EXPIRY_PRESETS = [
 export default function StepReview({ wallet }) {
   const { next, back, chainId, taker, takerENS, makerAssets, takerAssets, expiration, setExpiration, memo, setMemo } = useCreateFlow()
   const [showExpiry, setShowExpiry] = useState(false)
+  const isSelf = taker && wallet?.address && taker.toLowerCase() === wallet.address.toLowerCase()
 
   // Default 30 days
   const expirationDate = expiration
@@ -128,10 +129,14 @@ export default function StepReview({ wallet }) {
         <span className="char-count">{new TextEncoder().encode(memo).length}/280</span>
       </div>
 
+      {isSelf && (
+        <p className="form-error">You can't create an offer with yourself.</p>
+      )}
+
       <div className="wizard-footer">
         <div className="wizard-nav">
           <button type="button" className="btn btn-secondary" onClick={back}>Back</button>
-          <button type="button" className="btn btn-primary" onClick={next}>
+          <button type="button" className="btn btn-primary" onClick={next} disabled={isSelf}>
             Confirm
           </button>
         </div>
