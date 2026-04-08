@@ -1,8 +1,15 @@
-import { JsonRpcProvider } from 'ethers'
+import { JsonRpcProvider, Contract } from 'ethers'
 import { CHAINS } from './constants'
 
 const reverseCache = new Map()
 const forwardCache = new Map()
+
+const WEI_NAMES_ADDRESS = '0x0000000000696760E15f265e828DB644A0c242EB'
+const WEI_NAMES_ABI = [
+  'function computeId(string fullName) public pure returns (uint256)',
+  'function resolve(uint256 tokenId) public view returns (address)',
+  'function reverseResolve(address addr) public view returns (string)',
+]
 
 function getMainnetProvider() {
   const chain = CHAINS[1]
@@ -10,10 +17,14 @@ function getMainnetProvider() {
   return new JsonRpcProvider(chain.rpcUrl)
 }
 
+function getWeiContract(provider) {
+  return new Contract(WEI_NAMES_ADDRESS, WEI_NAMES_ABI, provider)
+}
+
 /**
- * Resolve an address to an ENS name (reverse lookup).
- * Uses mainnet provider since ENS lives on L1.
- * Returns the ENS name or null.
+ * Resolve an address to a name (reverse lookup).
+ * Tries ENS first, falls back to .wei names.
+ * Returns the name or null.
  */
 export async function resolveENS(address) {
   if (!address) return null
@@ -25,9 +36,19 @@ export async function resolveENS(address) {
     const provider = getMainnetProvider()
     if (!provider) return null
 
-    const name = await provider.lookupAddress(address)
-    reverseCache.set(key, name)
-    return name
+    // Try ENS first
+    const ensName = await provider.lookupAddress(address)
+    if (ensName) {
+      reverseCache.set(key, ensName)
+      return ensName
+    }
+
+    // Fall back to .wei
+    const wei = getWeiContract(provider)
+    const weiName = await wei.reverseResolve(address)
+    const result = weiName || null
+    reverseCache.set(key, result)
+    return result
   } catch {
     reverseCache.set(key, null)
     return null
@@ -35,7 +56,8 @@ export async function resolveENS(address) {
 }
 
 /**
- * Resolve an ENS name to an address (forward lookup).
+ * Resolve a name to an address (forward lookup).
+ * Routes .wei names to the wei contract, everything else to ENS.
  * Returns the address or null.
  */
 export async function resolveENSName(name) {
@@ -48,7 +70,18 @@ export async function resolveENSName(name) {
     const provider = getMainnetProvider()
     if (!provider) return null
 
-    const address = await provider.resolveName(name)
+    let address = null
+    if (key.endsWith('.wei')) {
+      const wei = getWeiContract(provider)
+      const tokenId = await wei.computeId(key)
+      const resolved = await wei.resolve(tokenId)
+      if (resolved && resolved !== '0x0000000000000000000000000000000000000000') {
+        address = resolved
+      }
+    } else {
+      address = await provider.resolveName(name)
+    }
+
     forwardCache.set(key, address)
     return address
   } catch {

@@ -37,10 +37,10 @@ export default function StepWant({ wallet }) {
           setEditingTaker(false)
           setTakerInput('')
         } else {
-          setError('Could not resolve ENS name.')
+          setError('Could not resolve name.')
         }
       } catch {
-        setError('Could not resolve ENS name.')
+        setError('Could not resolve name.')
       } finally {
         setResolving(false)
       }

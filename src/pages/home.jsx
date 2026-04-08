@@ -33,10 +33,10 @@ export default function Home() {
         if (addr) {
           navigate('/create', { state: { taker: addr, takerENS: trimmed } })
         } else {
-          setError('Could not resolve ENS name.')
+          setError('Could not resolve name.')
         }
       } catch {
-        setError('Could not resolve ENS name.')
+        setError('Could not resolve name.')
       } finally {
         setResolving(false)
       }

@@ -2,12 +2,12 @@ import { useState, useEffect } from 'react'
 import { resolveENS } from '../lib/ens'
 import { getEtherscanUrl } from '../lib/verification'
 
-export default function AddressDisplay({ address, chainId, showFull = false, asSpan = false }) {
-  const [ensName, setEnsName] = useState(null)
-  const [resolved, setResolved] = useState(false)
+export default function AddressDisplay({ address, chainId, showFull = false, asSpan = false, nameOverride = null }) {
+  const [ensName, setEnsName] = useState(nameOverride)
+  const [resolved, setResolved] = useState(!!nameOverride)
 
   useEffect(() => {
-    if (!address) return
+    if (!address || nameOverride) return
     let cancelled = false
     setResolved(false)
     resolveENS(address).then((name) => {
@@ -19,7 +19,7 @@ export default function AddressDisplay({ address, chainId, showFull = false, asS
       if (!cancelled) setResolved(true)
     })
     return () => { cancelled = true }
-  }, [address])
+  }, [address, nameOverride])
 
   const etherscanUrl = getEtherscanUrl(chainId, address)
   const truncated = address.slice(0, 6) + '...' + address.slice(-4)

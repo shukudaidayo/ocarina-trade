@@ -163,7 +163,7 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 - **Styling**: Minimal custom CSS. No CSS framework.
 - **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection. For chains without Alchemy NFT API support (currently Ink), falls back to the Blockscout v2 API (`/api/v2/addresses/{addr}/nft/collections` and `/api/v2/tokens/{contract}/instances`). If `VITE_ALCHEMY_API_KEY` is not set, the asset picker shows no wallet holdings — users can still add assets via manual contract address / token ID entry.
 - **NFT metadata**: Alchemy `getNFTMetadata` (pre-cached thumbnails, fast) with on-chain tokenURI + IPFS/HTTP/Arweave resolution as fallback
-- **ENS**: Forward resolution (name → address) for taker input, reverse resolution (address → name) for display throughout the UI. Uses mainnet provider since ENS lives on L1.
+- **Name resolution**: Forward resolution (name → address) for taker input, reverse resolution (address → name) for display throughout the UI. Uses mainnet provider since both systems live on L1. Supports ENS (`.eth` and other ENS TLDs) and `.wei` names (wei-names contract at `0x0000000000696760E15f265e828DB644A0c242EB`). ENS is checked first for reverse resolution; `.wei` is the fallback. For forward resolution, `.wei` names are routed directly to the wei-names contract. When a user enters a name during offer creation, the original name (`.wei` or `.eth`) is preserved and displayed through the review flow.
 - **Build**: Vite, with code splitting — heavy dependencies (AppKit, ethers, seaport-js) are lazy-loaded. The homepage renders with only React + Router (~75KB entry chunk). Wallet connection (AppKit) loads asynchronously in the background.
 - **Hosting**: Cloudflare Pages (SPA fallback for path-based routing)
 
@@ -172,7 +172,7 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
 
 1. **`/`** - Home / landing page
-   - Taker address input ("Who are you trading with?") with ENS resolution
+   - Taker address input ("Who are you trading with?") with ENS/.wei name resolution
    - "Or make an open offer anyone can accept" link
    - "Browse Offers" link
    - No wallet connection UI on this page
@@ -205,7 +205,7 @@ Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
    - All filters are URL query params, making filtered views shareable (e.g., `/offers?chain=base&category=open&address=vitalik.eth`)
    - Chain filter: Ethereum / Base / Polygon / Ink / All Chains. Accepts chain ID (`?chain=8453`) or name (`?chain=base`)
    - Status filter: "Open" (default) / "All". Open filters to unfilled/uncancelled/unexpired orders
-   - Address filter: `0x...` or ENS name. Shows offers where the address is maker or taker. "Me" button fills the connected wallet's address
+   - Address filter: `0x...` or ENS/.wei name. Shows offers where the address is maker or taker. "Me" button fills the connected wallet's address
    - Collection filter: contract address. Shows offers involving that NFT/token contract on either side
    - All data loaded once on mount (all chains in parallel), all filters applied client-side for instant switching
    - Offer cards show "From [address/ENS]" on each side, asset thumbnails and names (NFT images fetched via Alchemy), token logos for cash, chain name and status badge
@@ -361,7 +361,7 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 
 ### Creating a Trade
 
-1. User enters counterparty address (or ENS name) on the homepage, or chooses "open offer"
+1. User enters counterparty address (or ENS/.wei name) on the homepage, or chooses "open offer"
 2. Connects wallet (auto-skipped if already connected)
 3. Selects chain (Ethereum / Base / Polygon / Ink) — triggers wallet network switch. If the wallet has zero native gas on the selected chain, a modal warns that gas is needed and links to Uniswap (or Velodrome for Ink) to buy the native token. User can dismiss with "Continue Anyway".
 4. Selects assets to offer from wallet (collectibles grid + cash list, with search/filter and manual entry fallback)

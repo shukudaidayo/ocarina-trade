@@ -12,7 +12,7 @@ const EXPIRY_PRESETS = [
 ]
 
 export default function StepReview({ wallet }) {
-  const { next, back, chainId, taker, makerAssets, takerAssets, expiration, setExpiration, memo, setMemo } = useCreateFlow()
+  const { next, back, chainId, taker, takerENS, makerAssets, takerAssets, expiration, setExpiration, memo, setMemo } = useCreateFlow()
   const [showExpiry, setShowExpiry] = useState(false)
 
   // Default 30 days
@@ -75,7 +75,7 @@ export default function StepReview({ wallet }) {
         <div className="review-meta-row">
           <span className="meta-label">To:</span>
           {taker ? (
-            <AddressDisplay address={taker} chainId={chainId} />
+            <AddressDisplay address={taker} chainId={chainId} nameOverride={takerENS} />
           ) : (
             <em>Anyone</em>
           )}
