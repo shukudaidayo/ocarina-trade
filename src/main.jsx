@@ -9,8 +9,15 @@ import Home from './pages/home'
 import './style.css'
 
 // Lazy-load heavy pages — they pull in ethers, seaport-js, etc.
-const Create = lazy(() => import('./pages/create'))
-const Offer = lazy(() => import('./pages/offer'))
+// On chunk load failure (stale deploy), reload the page once.
+function lazyWithReload(importFn) {
+  return lazy(() => importFn().catch(() => {
+    window.location.reload()
+    return new Promise(() => {}) // never resolves — reload will handle it
+  }))
+}
+const Create = lazyWithReload(() => import('./pages/create'))
+const Offer = lazyWithReload(() => import('./pages/offer'))
 import Offers from './pages/offers'
 import Faq from './pages/faq'
 
