@@ -1,8 +1,27 @@
 {
+  "1": {
+    "0x4cc2c3518b1a5b782fa6c5bde80b7388fd8c674f": {
+      "name": "Kagami Academy",
+      "symbol": "KAGAMINFT",
+      "type": "ERC721"
+    }
+  },
   "8453": {
     "0xBB5eC6fD4B61723BD45C399840F1d868840ca16F": {
       "name": "Beezie Collectibles",
       "symbol": "CCLT",
+      "type": "ERC721"
+    },
+    "0x8a981C2cfdd7Fbc65395dD2c02ead94e9a2f65a7": {
+      "name": "Slab",
+      "symbol": "SLAB",
+      "type": "ERC721"
+    }
+  },
+  "57073": {
+    "0xaa19c32e1c71a9a75b38599121f2f233e131e953": {
+      "name": "Phygitals: 30th Edition",
+      "symbol": "30th",
       "type": "ERC721"
     }
   }

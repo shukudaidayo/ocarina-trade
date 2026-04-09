@@ -28,7 +28,7 @@ function AppShell() {
         </Suspense>
       </main>
       <footer>
-        <p>DM <a href="https://x.com/shukudaidayo" target="_blank" rel="noopener noreferrer">@shukudaidayo</a> on Twitter with feedback</p>
+        <p>Follow <a href="https://x.com/ocarinatrade" target="_blank" rel="noopener noreferrer">@ocarinatrade</a> · DM <a href="https://x.com/shukudaidayo" target="_blank" rel="noopener noreferrer">@shukudaidayo</a> with feedback</p>
       </footer>
     </div>
   )
