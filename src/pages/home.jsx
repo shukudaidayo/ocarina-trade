@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router'
 import { resolveENSName } from '../lib/ens'
 
 export default function Home() {
+  useEffect(() => { document.title = 'ocarina.trade' }, [])
   const navigate = useNavigate()
   const [input, setInput] = useState('')
   const [error, setError] = useState(null)

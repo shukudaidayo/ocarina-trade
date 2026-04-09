@@ -1,0 +1,30 @@
+# ocarina.trade
+
+Peer-to-peer OTC swap site for NFTs and tokens. No backend, no fees, no middleman.
+
+## What it does
+- Atomic swaps of NFTs (ERC-721, ERC-1155), whitelisted ERC-20 tokens, and native ETH
+- Multi-asset swaps (multiple items per side)
+- Off-chain Seaport signatures, registered onchain via OTCZone for discovery
+- Optional taker restriction, expiration, and memo
+
+## Supported chains
+Ethereum, Base, Polygon, Ink
+
+## How it works
+1. Connect wallet, choose counterparty (or leave open)
+2. Select what you're offering and what you want
+3. Sign the order (offchain) and register it onchain (one transaction)
+4. Share the link with your counterparty
+5. They review, approve, and fill the order (one onchain transaction)
+
+## Key properties
+- No backend, no database — all state is onchain or in the URL
+- No admin, no owner, no upgradeability
+- Assets stay in wallets until atomic swap execution
+- Open source (GPL-3.0-only)
+- Built on Seaport 1.6 (OpenSea's audited swap protocol)
+
+## Links
+- Site: https://ocarina.trade
+- Twitter: https://x.com/ocarinatrade

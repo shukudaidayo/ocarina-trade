@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-A peer-to-peer trade website for trading NFTs (and whitelisted ERC-20s) directly between two parties. Uses OpenSea's **Seaport protocol** as the on-chain settlement layer, with a minimal custom **OTCZone** contract for taker restriction, ERC-20 whitelisting, and order discovery. No backend, no database, no accounts.
+A peer-to-peer trade website for trading NFTs (and whitelisted ERC-20s) directly between two parties. Uses OpenSea's **Seaport protocol** as the onchain settlement layer, with a minimal custom **OTCZone** contract for taker restriction, ERC-20 whitelisting, and order discovery. No backend, no database, no accounts.
 
 ### Motivation
 
@@ -13,15 +13,15 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 - **Near-zero custom contract surface.** The only custom contract (OTCZone, ~135 lines) handles taker restriction, ERC-20 whitelisting, signature-verified order discovery — it never touches user funds. Seaport handles all asset transfers.
 - **Battle-tested security.** Multiple professional audits, billions in volume, years of production use.
 - **No liability.** We are building a frontend, not a protocol. The smart contract layer is OpenSea's responsibility.
-- **Free order creation.** Seaport uses off-chain signatures — creating an offer costs zero gas.
+- **Cheap order creation.** Seaport uses offchain EIP-712 signatures — the only gas cost is the OTCZone registration transaction for discoverability.
 - **Richer features for free.** ERC-20 support, criteria-based offers, and multi-chain support come built-in.
 
 ### Design Principles
 
-- **No backend**: All state lives on-chain or in the URL. Nothing to maintain, no servers to keep running.
+- **No backend**: All state lives onchain or in the URL. Nothing to maintain, no servers to keep running.
 - **Minimal dependencies**: Fewer deps = fewer things that break over time.
 - **Anti-scam by default**: Token verification and warnings are first-class concerns, not afterthoughts.
-- **Seaport SDK**: Use seaport-js for order construction, signing, and fulfillment. The SDK is tied to an immutable contract — it will work as long as Seaport 1.6 exists on-chain, regardless of whether OpenSea continues maintaining it.
+- **Seaport SDK**: Use seaport-js for order construction, signing, and fulfillment. The SDK is tied to an immutable contract — it will work as long as Seaport 1.6 exists onchain, regardless of whether OpenSea continues maintaining it.
 
 ---
 
@@ -79,7 +79,7 @@ OfferItem / ConsiderationItem {
 
 For a simple NFT-for-NFT trade:
 
-1. **Maker creates an order off-chain:**
+1. **Maker creates an order:**
    - `offer`: The NFTs/tokens the maker is giving
    - `consideration`: The NFTs/tokens the maker wants, with `recipient` set to the maker's address
    - `orderType`: `FULL_RESTRICTED` (2) — always restricted, so the OTCZone validates every order (ERC-20 whitelist + optional taker restriction)
@@ -89,9 +89,11 @@ For a simple NFT-for-NFT trade:
 
 2. **Maker signs the order** using EIP-712 typed data signing (no gas).
 
-3. **Maker shares a URL** containing the signed order.
+3. **Order is registered onchain** via `OTCZone.registerOrder()` — one transaction that stores the order for discoverability on the offers page. The signed order is encoded in the transaction as a URI.
 
-4. **Taker opens the URL**, reviews the trade, approves their assets to Seaport, and calls `fulfillOrder()` — one on-chain transaction that atomically exchanges all assets.
+4. **Maker shares a URL** containing the chain ID and registration tx hash.
+
+5. **Taker opens the URL**, reviews the trade, approves their assets to Seaport, and calls `fulfillOrder()` — one onchain transaction that atomically exchanges all assets.
 
 #### Taker Restriction
 
@@ -109,7 +111,7 @@ The contract implements Seaport 1.6's `ZoneInterface` (from `seaport-types`). It
 It serves three purposes:
 1. **Taker validation**: Checks that the fulfiller matches the allowed taker in `zoneHash`.
 2. **ERC-20 whitelist**: Rejects orders containing non-whitelisted ERC-20 tokens, both at registration and at fulfillment. Whitelist is set at deployment (immutable — no admin can modify it). Whitelists per chain: Ethereum (WETH, USDC, USDT, USDS, EURC), Base (WETH, USDC, USDS, EURC), Polygon (WETH, USDC, USDT0), Ink (WETH, USDC, USDT0).
-3. **Order registry**: `registerOrder` publishes signed orders for discovery. It accepts a single `OrderRegistration` struct (defined outside the contract for clean ABI generation) containing the order hash, maker, taker, offer/consideration items, signature, orderURI, and an optional memo (max 280 bytes). It verifies the maker's EIP-712 signature on-chain using Solady's `SignatureCheckerLib`, which supports EOA signatures (both standard 65-byte and EIP-2098 compact 64-byte) and EIP-1271 contract wallet signatures. The indexed `maker` in the `OrderRegistered` event is cryptographically guaranteed to be the actual order signer — regardless of who submits the transaction. This allows proxy wallets, gas sponsors, and smart wallets to register orders on behalf of makers.
+3. **Order registry**: `registerOrder` publishes signed orders for discovery. It accepts a single `OrderRegistration` struct (defined outside the contract for clean ABI generation) containing the order hash, maker, taker, offer/consideration items, signature, orderURI, and an optional memo (max 280 bytes). It verifies the maker's EIP-712 signature onchain using Solady's `SignatureCheckerLib`, which supports EOA signatures (both standard 65-byte and EIP-2098 compact 64-byte) and EIP-1271 contract wallet signatures. The indexed `maker` in the `OrderRegistered` event is cryptographically guaranteed to be the actual order signer — regardless of who submits the transaction. This allows proxy wallets, gas sponsors, and smart wallets to register orders on behalf of makers.
 
 ```solidity
 struct OrderRegistration {
@@ -131,7 +133,7 @@ ERC-20 enforcement happens at three layers:
 
 The `orderURI` field stores the base64-encoded signed order, so the frontend can reconstruct the trade page from the event alone. The `memo` field is emitted in the `OrderRegistered` event and displayed on the trade detail page when present (not on offer cards, to keep the browse layout clean).
 
-**Note:** Seaport also allows the offerer to cancel by incrementing their counter (bulk cancel) or cancelling specific orders on-chain.
+**Note:** Seaport also allows the offerer to cancel by incrementing their counter (bulk cancel) or cancelling specific orders onchain.
 
 #### Approvals
 
@@ -145,7 +147,7 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 
 | Aspect | Custom Contract | Seaport |
 |--------|----------------|---------|
-| Order creation | On-chain tx (gas cost) | Off-chain signature (free) |
+| Order creation | On-chain tx (gas cost) | Off-chain signature + onchain registration (gas cost) |
 | Order data | Stored in tx events | Stored in OTCZone registry events |
 | Cancel | On-chain tx per order | On-chain: per-order or bulk (increment counter) |
 | Kill switch | Owner-only one-way kill | N/A — not our contract |
@@ -162,7 +164,7 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 - **Wallet connection**: Reown AppKit (WalletConnect + injected providers)
 - **Styling**: Minimal custom CSS. No CSS framework.
 - **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection. For chains without Alchemy NFT API support (currently Ink), falls back to the Blockscout v2 API (`/api/v2/addresses/{addr}/nft/collections` and `/api/v2/tokens/{contract}/instances`). If `VITE_ALCHEMY_API_KEY` is not set, the asset picker shows no wallet holdings — users can still add assets via manual contract address / token ID entry.
-- **NFT metadata**: Alchemy `getNFTMetadata` (pre-cached thumbnails, fast) with on-chain tokenURI + IPFS/HTTP/Arweave resolution as fallback
+- **NFT metadata**: Alchemy `getNFTMetadata` (pre-cached thumbnails, fast) with onchain tokenURI + IPFS/HTTP/Arweave resolution as fallback
 - **Name resolution**: Forward resolution (name → address) for taker input, reverse resolution (address → name) for display throughout the UI. Uses mainnet provider since both systems live on L1. Supports ENS (`.eth` and other ENS TLDs) and `.wei` names (wei-names contract at `0x0000000000696760E15f265e828DB644A0c242EB`). ENS is checked first for reverse resolution; `.wei` is the fallback. For forward resolution, `.wei` names are routed directly to the wei-names contract. When a user enters a name during offer creation, the original name (`.wei` or `.eth`) is preserved and displayed through the review flow.
 - **Build**: Vite, with code splitting — heavy dependencies (AppKit, ethers, seaport-js) are lazy-loaded. The homepage renders with only React + Router (~75KB entry chunk). Wallet connection (AppKit) loads asynchronously in the background.
 - **Hosting**: Cloudflare Pages (SPA fallback for path-based routing)
@@ -320,7 +322,7 @@ The picker auto-fetches pages until 50 non-spam collections are loaded (or the w
 
 ### Holdings Verification
 
-The trade page and offers page perform on-chain balance checks to verify that parties actually hold the assets in an order. This prevents users from attempting trades that will revert.
+The trade page and offers page perform onchain balance checks to verify that parties actually hold the assets in an order. This prevents users from attempting trades that will revert.
 
 - **Trade page**: Checks maker's holdings (offer items) and taker's holdings (consideration items) via direct contract calls (`ownerOf` for ERC-721, `balanceOf` for ERC-1155/ERC-20, `provider.getBalance` for native ETH). Missing assets are flagged per-item, and the Accept button is disabled if either side is missing assets.
 - **Offers page**: Checks maker holdings for all open offers. In the "Open" view, orders where the maker no longer holds assets are sorted to the bottom and visually dimmed.
@@ -330,7 +332,7 @@ Friendly error messages map known Seaport/Zone revert selectors (e.g., `0x82b429
 
 ### Memo Moderation
 
-The memo field is stored permanently in on-chain event logs and cannot be deleted. Current mitigations:
+The memo field is stored permanently in onchain event logs and cannot be deleted. Current mitigations:
 
 - **Plain text only.** React's default text rendering escapes HTML/script injection. Never use `dangerouslySetInnerHTML` on memos.
 - **No auto-linking.** URLs in memos are displayed as plain text, not clickable links. Prevents phishing.
@@ -380,7 +382,7 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 2. UI fetches `OrderRegistered` event from the registration tx receipt and extracts the signed order
 3. UI validates: checks Seaport for order status, checks expiration, verifies signature
 4. UI displays all assets with verification indicators
-5. UI checks on-chain holdings for both maker (offer) and taker (consideration), flagging any missing assets
+5. UI checks onchain holdings for both maker (offer) and taker (consideration), flagging any missing assets
 6. Counterparty reviews the trade
 7. Connects wallet
 8. Clicks "Accept Trade"
@@ -393,8 +395,8 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 
 1. Maker opens the trade link (or navigates from the offers page)
 2. Clicks "Cancel"
-3. UI calls `seaport.cancel([orderComponents])` — one on-chain tx
-4. Order is cancelled on-chain
+3. UI calls `seaport.cancel([orderComponents])` — one onchain tx
+4. Order is cancelled onchain
 
 ---
 
@@ -537,7 +539,7 @@ The only custom contract is the OTCZone (~135 lines), deployed once per chain. F
 
 1. ~~**URL length**~~: **Resolved** — URLs use the `/offer/{chainId}/{txHash}` format. The signed order is stored onchain in the `OrderRegistered` event and fetched via tx receipt.
 
-2. ~~**Offers page without events**~~: **Resolved** — the OTCZone contract emits `OrderRegistered` events, providing an on-chain index of published orders. The offers page queries these events and cross-references with Seaport for order status.
+2. ~~**Offers page without events**~~: **Resolved** — the OTCZone contract emits `OrderRegistered` events, providing an onchain index of published orders. The offers page queries these events and cross-references with Seaport for order status.
 
 3. ~~**OTCZone implementation**~~: **Resolved** — implemented and tested. The Seaport 1.6 `ZoneInterface` requires `authorizeOrder`, `validateOrder`, `getSeaportMetadata`, and `supportsInterface`. Our contract implements all four. See `contracts/src/OTCZone.sol` and `contracts/test/OTCZone.t.sol`.
 

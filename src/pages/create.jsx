@@ -11,6 +11,7 @@ import StepExecute from '../components/create-flow/step-execute'
 import StepDone from '../components/create-flow/step-done'
 
 export default function Create() {
+  useEffect(() => { document.title = 'Create Offer — ocarina.trade' }, [])
   const wallet = useOutletContext()
   const location = useLocation()
   const { taker, takerENS } = location.state || {}

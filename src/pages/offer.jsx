@@ -43,6 +43,7 @@ function friendlyFillError(err) {
 }
 
 export default function Offer() {
+  useEffect(() => { document.title = 'Offer — ocarina.trade' }, [])
   const { chainId, txHash } = useParams()
   const wallet = useOutletContext()
 

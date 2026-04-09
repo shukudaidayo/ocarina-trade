@@ -34,6 +34,7 @@ function parseChainParam(value) {
 }
 
 export default function Offers() {
+  useEffect(() => { document.title = 'Offers — ocarina.trade' }, [])
   const wallet = useOutletContext()
   const [searchParams, setSearchParams] = useSearchParams()
 

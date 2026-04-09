@@ -68,6 +68,7 @@ const questions = [
 ]
 
 export default function FAQ() {
+  useEffect(() => { document.title = 'FAQ — ocarina.trade' }, [])
   const [activeId, setActiveId] = useState(questions[0].id)
   const sectionRefs = useRef({})
 
