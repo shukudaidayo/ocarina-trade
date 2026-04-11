@@ -1805,13 +1805,19 @@ footer {
 
 .cash-row-input {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
 }
 
 .cash-row-input input {
   width: 120px;
   text-align: right;
+}
+
+.cash-row-warning {
+  font-size: 0.7rem;
+  color: var(--warning, #e8a33d);
 }
 
 /* Asset Tally */

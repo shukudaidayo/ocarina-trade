@@ -7,6 +7,7 @@ import mergedCollections from '../../data/merged-collections.json'
 import { Contract, JsonRpcProvider, formatUnits } from 'ethers'
 
 const ERC20_ABI = ['function balanceOf(address account) view returns (uint256)']
+const ERC165_ABI = ['function supportsInterface(bytes4 interfaceId) view returns (bool)']
 
 // Local fallback images for merged collections
 const COLLECTION_IMAGES = {
@@ -246,10 +247,37 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
   const [showManual, setShowManual] = useState(false)
   const [manualAddress, setManualAddress] = useState('')
   const [manualTokenId, setManualTokenId] = useState('')
-  const [manualType, setManualType] = useState('ERC721')
+  const [manualType, setManualType] = useState(null) // auto-detected: 'ERC721', 'ERC1155', or null
+  const [manualTypeLoading, setManualTypeLoading] = useState(false)
+  const [manualTypeError, setManualTypeError] = useState(null)
   const [manualAmount, setManualAmount] = useState('1')
   const [quantityNft, setQuantityNft] = useState(null)
   const [quantity, setQuantity] = useState('1')
+
+  // Auto-detect token type when manual address changes
+  useEffect(() => {
+    setManualType(null)
+    setManualTypeError(null)
+    if (!manualAddress.match(/^0x[0-9a-fA-F]{40}$/)) return
+    const chain = CHAINS[chainId]
+    if (!chain) return
+    setManualTypeLoading(true)
+    const provider = new JsonRpcProvider(chain.rpcUrl)
+    const contract = new Contract(manualAddress, ERC165_ABI, provider)
+    Promise.all([
+      contract.supportsInterface('0xd9b67a26'), // ERC-1155
+      contract.supportsInterface('0x80ac58cd'), // ERC-721
+    ]).then(([is1155, is721]) => {
+      if (is1155) setManualType('ERC1155')
+      else if (is721) setManualType('ERC721')
+      else setManualTypeError('Unrecognized contract')
+      setManualTypeLoading(false)
+    }).catch(() => {
+      setManualTypeError('Unrecognized contract')
+      setManualTypeLoading(false)
+    })
+  }, [manualAddress, chainId])
+
   const [openCollection, setOpenCollection] = useState(null)
   const [fullCollectionNfts, setFullCollectionNfts] = useState(null)
   const [collectionPageKeys, setCollectionPageKeys] = useState({}) // { contractAddr: pageKey }
@@ -479,6 +507,18 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
     )
   }, [selected])
 
+  const resolveCollectionName = useCallback((contract, fallback) => {
+    const addr = contract.toLowerCase()
+    const { aliasToCanonical, canonicalMeta } = buildMergedLookups(chainId)
+    const canonical = aliasToCanonical[addr] || addr
+    const meta = canonicalMeta[canonical]
+    if (meta?.name) return meta.name
+    // Check the loaded collections state
+    const col = collections[canonical] || collections[addr]
+    if (col?.name) return col.name
+    return fallback
+  }, [chainId, collections])
+
   const toggleNft = useCallback((nft) => {
     const contract = nft.contract
     const tokenId = nft.tokenId
@@ -503,9 +543,9 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
       assetType: nft.tokenType === 'ERC1155' ? 'ERC1155' : 'ERC721',
       _name: nft.name,
       _image: nft.image,
-      _collection: nft.contractName,
+      _collection: resolveCollectionName(contract, nft.contractName),
     }])
-  }, [selected, onChange, isSelected])
+  }, [selected, onChange, isSelected, resolveCollectionName])
 
   const confirmQuantity = useCallback(() => {
     if (!quantityNft) return
@@ -518,13 +558,13 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
       assetType: 'ERC1155',
       _name: quantityNft.name,
       _image: quantityNft.image,
-      _collection: quantityNft.contractName,
+      _collection: resolveCollectionName(quantityNft.contract, quantityNft.contractName),
     }])
     setQuantityNft(null)
-  }, [quantityNft, quantity, selected, onChange])
+  }, [quantityNft, quantity, selected, onChange, resolveCollectionName])
 
   const addManual = useCallback(async () => {
-    if (!manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualTokenId && manualTokenId !== '0')) return
+    if (!manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualTokenId && manualTokenId !== '0') || !manualType) return
     const asset = {
       token: manualAddress,
       tokenId: manualTokenId,
@@ -823,10 +863,6 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
               onChange={(e) => setManualTokenId(e.target.value)}
             />
             <div className="manual-entry-row">
-              <select value={manualType} onChange={(e) => setManualType(e.target.value)}>
-                <option value="ERC721">ERC-721</option>
-                <option value="ERC1155">ERC-1155</option>
-              </select>
               {manualType === 'ERC1155' && (
                 <input
                   type="text"
@@ -840,11 +876,13 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
                 type="button"
                 className="btn btn-sm"
                 onClick={addManual}
-                disabled={!manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualTokenId && manualTokenId !== '0')}
+                disabled={!manualType || !manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualTokenId && manualTokenId !== '0')}
               >
                 Add
               </button>
+              {manualType && <span className="text-muted">{manualType === 'ERC1155' ? 'ERC-1155' : 'ERC-721'}</span>}
             </div>
+            <p className="form-error" style={{ visibility: manualTypeError ? 'visible' : 'hidden', margin: 0 }}>{manualTypeError || '\u00A0'}</p>
           </div>
         )}
       </div>
@@ -975,6 +1013,7 @@ const TOKEN_LOGOS = {
 
 function CashRow({ symbol, balance, showBalance, amount, onAmountChange, disabled }) {
   const logo = TOKEN_LOGOS[symbol]
+  const exceeds = showBalance && balance !== null && balance !== undefined && amount && Number(amount) > Number(balance)
   return (
     <div className={`cash-row${disabled ? ' cash-row-disabled' : ''}`}>
       <div className="cash-row-info">
@@ -994,6 +1033,7 @@ function CashRow({ symbol, balance, showBalance, amount, onAmountChange, disable
           onChange={(e) => onAmountChange(e.target.value)}
           disabled={disabled}
         />
+        {exceeds && <span className="cash-row-warning">Exceeds balance</span>}
       </div>
     </div>
   )
