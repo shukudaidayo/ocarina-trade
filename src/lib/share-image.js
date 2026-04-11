@@ -1,5 +1,6 @@
 import { WHITELISTED_ERC20, CHAINS } from './constants'
 import { formatUnits } from 'ethers'
+import { formatTokenAmount } from './wallet'
 
 const WIDTH = 1200
 const HEIGHT = 630
@@ -101,11 +102,11 @@ function getAssetLabel(asset, chainId) {
   const it = Number(asset.itemType)
   if (it === 0) {
     const sym = CHAINS[chainId]?.nativeSymbol || 'ETH'
-    return `${formatUnits(asset.startAmount || asset.amount || '0', 18)} ${sym}`
+    return `${formatTokenAmount(formatUnits(asset.startAmount || asset.amount || '0', 18))} ${sym}`
   }
   if (it === 1) {
     const info = (WHITELISTED_ERC20[chainId] || {})[asset.token]
-    return `${formatUnits(asset.startAmount || asset.amount || '0', info?.decimals ?? 18)} ${info?.symbol || '???'}`
+    return `${formatTokenAmount(formatUnits(asset.startAmount || asset.amount || '0', info?.decimals ?? 18))} ${info?.symbol || '???'}`
   }
   // NFT — name comes from metadata
   return asset._name || `#${asset.identifierOrCriteria || asset.tokenId || '?'}`

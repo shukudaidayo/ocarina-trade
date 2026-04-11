@@ -7,6 +7,7 @@ import { resolveENSName } from '../lib/ens'
 import AddressDisplay from '../components/address-display'
 import { ZONE_ADDRESSES, CHAINS, WHITELISTED_ERC20 } from '../lib/constants'
 import { formatUnits } from 'ethers'
+import { formatTokenAmount } from '../lib/wallet'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const PAGE_SIZE = 20
@@ -383,13 +384,13 @@ function AssetSummary({ items, chainId }) {
           return (
             <span key={i} className="offer-asset-item">
               {TOKEN_LOGOS[sym] && <img src={TOKEN_LOGOS[sym]} alt={sym} className="offer-asset-logo" />}
-              <span>{formatUnits(item.startAmount, 18)} {sym}</span>
+              <span>{formatTokenAmount(formatUnits(item.startAmount, 18))} {sym}</span>
             </span>
           )
         }
         if (it === 1) {
           const info = (WHITELISTED_ERC20[chainId] || {})[item.token]
-          const amount = formatUnits(item.startAmount, info?.decimals ?? 18)
+          const amount = formatTokenAmount(formatUnits(item.startAmount, info?.decimals ?? 18))
           const sym = info?.symbol || '???'
           return (
             <span key={i} className="offer-asset-item">

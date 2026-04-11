@@ -43,7 +43,7 @@ export default function AssetCard({ asset, chainId, compact = true, showUnverifi
     }
 
     // Use cached metadata from the asset picker if available
-    if (asset._image || asset._name) {
+    if (asset._image) {
       setMetadata({ name: asset._name, image: asset._image })
       setLoading(false)
       return

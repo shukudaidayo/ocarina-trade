@@ -13,6 +13,7 @@ import TxChecklist, { buildSteps } from '../components/tx-checklist'
 import { WHITELISTED_ERC20, CHAINS } from '../lib/constants'
 import { ItemType } from '@opensea/seaport-js/lib/constants'
 import { formatUnits } from 'ethers'
+import { formatTokenAmount } from '../lib/wallet'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
@@ -396,10 +397,10 @@ export default function Offer() {
   // Parse offer/consideration for display (format fungible amounts to human-readable)
   function formatAmount(item) {
     const it = Number(item.itemType)
-    if (it === ItemType.NATIVE) return formatUnits(item.startAmount, 18)
+    if (it === ItemType.NATIVE) return formatTokenAmount(formatUnits(item.startAmount, 18))
     if (it === ItemType.ERC20) {
       const info = (WHITELISTED_ERC20[Number(chainId)] || {})[item.token]
-      return formatUnits(item.startAmount, info?.decimals ?? 18)
+      return formatTokenAmount(formatUnits(item.startAmount, info?.decimals ?? 18))
     }
     return item.startAmount
   }

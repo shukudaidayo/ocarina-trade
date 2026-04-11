@@ -103,7 +103,8 @@ async function fetchJSON(url) {
 
   if (url.startsWith('data:application/json;base64,')) {
     const b64 = url.slice('data:application/json;base64,'.length)
-    return JSON.parse(atob(b64))
+    const raw = atob(b64).replace(/[\x00-\x1f]/g, (ch) => ch === '\n' ? '\\n' : ch === '\t' ? '\\t' : ch === '\r' ? '\\r' : '')
+    return JSON.parse(raw)
   }
 
   if (url.startsWith('data:application/json,')) {
