@@ -864,13 +864,16 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
             />
             <div className="manual-entry-row">
               {manualType === 'ERC1155' && (
-                <input
-                  type="text"
-                  placeholder="Amount"
-                  value={manualAmount}
-                  onChange={(e) => setManualAmount(e.target.value)}
-                  style={{ width: '80px' }}
-                />
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                  Amount:
+                  <input
+                    type="number"
+                    min="1"
+                    value={manualAmount}
+                    onChange={(e) => setManualAmount(e.target.value)}
+                    style={{ width: '60px' }}
+                  />
+                </label>
               )}
               <button
                 type="button"

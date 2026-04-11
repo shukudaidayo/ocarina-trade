@@ -7,7 +7,7 @@ export default function WizardShell({ children, allComplete = false }) {
 
   // Warn on tab close / refresh if user has selected assets
   useEffect(() => {
-    if (!hasMakerAssets) return
+    if (!hasMakerAssets || allComplete) return
 
     const handler = (e) => {
       e.preventDefault()
@@ -15,7 +15,7 @@ export default function WizardShell({ children, allComplete = false }) {
     }
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
-  }, [hasMakerAssets])
+  }, [hasMakerAssets, allComplete])
 
   // Block in-app navigation (e.g. clicking "Browse Offers") if user has selected assets
   const blocker = useBlocker(hasMakerAssets && !allComplete)
