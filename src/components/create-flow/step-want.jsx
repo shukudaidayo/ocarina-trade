@@ -105,7 +105,7 @@ export default function StepWant({ wallet }) {
       />
 
       <div className="wizard-footer">
-        <AssetTally assets={takerAssets} chainId={chainId} />
+        <AssetTally assets={takerAssets} chainId={chainId} onChange={setTakerAssets} />
         <div className="wizard-nav">
           <button type="button" className="btn btn-secondary" onClick={() => {
             if (pickerBackRef.current && pickerBackRef.current()) return

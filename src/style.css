@@ -400,7 +400,7 @@ footer {
 .asset-card-image img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .asset-card-placeholder {
@@ -1250,7 +1250,7 @@ footer {
 .offer-asset-thumb img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .offer-asset-thumb-placeholder {
@@ -1818,11 +1818,39 @@ footer {
 
 .asset-tally {
   font-size: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
 }
 
 .asset-tally.empty {
   color: var(--text-muted);
   font-style: italic;
+}
+
+.asset-tally-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--bg-card, #2a2a2a);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.85rem;
+}
+
+.asset-tally-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 0.15rem;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.asset-tally-remove:hover {
+  color: var(--text);
 }
 
 /* ── Review ────────────────────────────────────────────────── */

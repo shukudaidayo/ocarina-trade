@@ -4,6 +4,11 @@
       "name": "Kagami Academy",
       "symbol": "KAGAMINFT",
       "type": "ERC721"
+    },
+    "0xa592b31bfDb9Bae8B10F5FB185173A4B7905fFda": {
+      "name": "Shuku's Ocarina",
+      "symbol": "OCARINA",
+      "type": "ERC1155"
     }
   },
   "8453": {
@@ -16,6 +21,11 @@
       "name": "Slab",
       "symbol": "SLAB",
       "type": "ERC721"
+    },
+    "0xc76580B07558ba1Ea5229D8408f486B3a08704CC": {
+      "name": "Shuku's Ocarina",
+      "symbol": "OCARINA",
+      "type": "ERC1155"
     }
   },
   "57073": {
@@ -23,6 +33,11 @@
       "name": "Phygitals: 30th Edition",
       "symbol": "30th",
       "type": "ERC721"
+    },
+    "0x39d2ca1274330e05023285d1c177beb8e3083120": {
+      "name": "Shuku's Ocarina",
+      "symbol": "OCARINA",
+      "type": "ERC1155"
     }
   }
 }

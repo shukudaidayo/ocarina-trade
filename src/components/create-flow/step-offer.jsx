@@ -27,7 +27,7 @@ export default function StepOffer({ wallet }) {
       />
 
       <div className="wizard-footer">
-        <AssetTally assets={makerAssets} chainId={chainId} />
+        <AssetTally assets={makerAssets} chainId={chainId} onChange={setMakerAssets} />
         <div className="wizard-nav">
           <button type="button" className="btn btn-secondary" onClick={handleBack}>Back</button>
           <button

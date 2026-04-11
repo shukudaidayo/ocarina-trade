@@ -473,6 +473,13 @@ All contracts deployed via CREATE2 (Nick's Factory at `0x4e59b44847b379578588920
 - Public API available at ethidentitykit.com — no API key required.
 - Complements ocarina identicons: identicons help verify the *right* address, EFP helps assess *trust* in an address.
 
+### Arweave / IPFS Mirror
+- Host a static snapshot of the built frontend on Arweave or IPFS as a permanent, censorship-resistant fallback.
+- Arweave: upload once, permanent. Use ArNS for a stable name. Cost is negligible for a small static site.
+- IPFS: upload and pin (Pinata, Fleek, etc.). Can point an ENS content hash at the CID. Requires re-pinning and updating the hash on each deploy.
+- Best as a secondary mirror rather than the primary deployment — every update requires re-uploading and updating references, which adds friction to the deploy flow.
+- Reinforces the "if we disappear, the app lives on" promise.
+
 ### Not Planned
 - Order book / listing marketplace
 - Chat / messaging
