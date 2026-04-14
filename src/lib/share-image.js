@@ -4,12 +4,12 @@ import { formatTokenAmount } from './wallet'
 
 const WIDTH = 1200
 const HEIGHT = 630
-const BG = '#1a1a2e'
-const SURFACE = '#242442'
+const BG = '#111'
+const SURFACE = '#1a1a1a'
 const TEXT = '#e0e0e0'
 const MUTED = '#888'
-const ACCENT = '#6c63ff'
-const DIVIDER = '#3a3a5c'
+const ACCENT = '#5b9aff'
+const DIVIDER = '#333'
 
 /**
  * Load an image from a URL, returning an Image element.
@@ -56,31 +56,43 @@ function roundRect(ctx, x, y, w, h, r) {
  */
 function drawAssetTile(ctx, x, y, img, label, tileSize) {
   const padding = 6
+  const fontSize = Math.min(Math.round(tileSize * 0.08 + 4), 24)
+  const labelHeight = fontSize + 14
   // Background
   ctx.fillStyle = BG
-  roundRect(ctx, x, y, tileSize, tileSize + 28, 8)
+  roundRect(ctx, x, y, tileSize, tileSize + labelHeight, 8)
   ctx.fill()
 
-  // Image
+  // Image (contain-fit, preserving aspect ratio)
   if (img) {
+    const boxSize = tileSize - padding * 2
+    const boxX = x + padding
+    const boxY = y + padding
+    const imgW = img.naturalWidth || img.width
+    const imgH = img.naturalHeight || img.height
+    const scale = Math.min(boxSize / imgW, boxSize / imgH)
+    const drawW = imgW * scale
+    const drawH = imgH * scale
+    const drawX = boxX + (boxSize - drawW) / 2
+    const drawY = boxY + (boxSize - drawH) / 2
     ctx.save()
-    roundRect(ctx, x + padding, y + padding, tileSize - padding * 2, tileSize - padding * 2, 6)
+    roundRect(ctx, boxX, boxY, boxSize, boxSize, 6)
     ctx.clip()
-    ctx.drawImage(img, x + padding, y + padding, tileSize - padding * 2, tileSize - padding * 2)
+    ctx.drawImage(img, drawX, drawY, drawW, drawH)
     ctx.restore()
   } else {
     ctx.fillStyle = DIVIDER
     roundRect(ctx, x + padding, y + padding, tileSize - padding * 2, tileSize - padding * 2, 6)
     ctx.fill()
     ctx.fillStyle = MUTED
-    ctx.font = '20px system-ui, sans-serif'
+    ctx.font = `${Math.round(tileSize * 0.2)}px system-ui, sans-serif`
     ctx.textAlign = 'center'
     ctx.fillText('?', x + tileSize / 2, y + tileSize / 2 + 7)
   }
 
   // Label
   ctx.fillStyle = TEXT
-  ctx.font = '14px system-ui, sans-serif'
+  ctx.font = `${fontSize}px system-ui, sans-serif`
   ctx.textAlign = 'center'
   const maxLabelWidth = tileSize - 8
   let displayLabel = label
@@ -90,9 +102,9 @@ function drawAssetTile(ctx, x, y, img, label, tileSize) {
     }
     displayLabel += '...'
   }
-  ctx.fillText(displayLabel, x + tileSize / 2, y + tileSize + 20)
+  ctx.fillText(displayLabel, x + tileSize / 2, y + tileSize + fontSize + 2)
 
-  return tileSize
+  return { tileSize, labelHeight }
 }
 
 /**
@@ -161,67 +173,70 @@ export async function generateTradeImage({ maker, makerENS, taker, takerENS, cha
   // Arrow in the middle
   const arrowX = WIDTH / 2
   const arrowY = sideY + sideHeight / 2
-  ctx.fillStyle = ACCENT
+  ctx.fillStyle = TEXT
   ctx.font = 'bold 36px system-ui, sans-serif'
   ctx.textAlign = 'center'
   ctx.fillText('⇄', arrowX, arrowY + 12)
 
   // Side headers
   const headerY = sideY + 35
-  ctx.font = '16px system-ui, sans-serif'
+  ctx.font = '20px system-ui, sans-serif'
   ctx.textAlign = 'center'
 
   ctx.fillStyle = MUTED
   ctx.fillText('From', leftX + sideWidth / 2, headerY - 2)
   ctx.fillStyle = TEXT
-  ctx.font = 'bold 18px system-ui, sans-serif'
+  ctx.font = 'bold 24px system-ui, sans-serif'
   const makerLabel = makerENS || truncate(maker)
-  ctx.fillText(makerLabel, leftX + sideWidth / 2, headerY + 22)
+  ctx.fillText(makerLabel, leftX + sideWidth / 2, headerY + 24)
 
   ctx.fillStyle = MUTED
-  ctx.font = '16px system-ui, sans-serif'
+  ctx.font = '20px system-ui, sans-serif'
   ctx.fillText('From', rightX + sideWidth / 2, headerY - 2)
   ctx.fillStyle = TEXT
-  ctx.font = 'bold 18px system-ui, sans-serif'
+  ctx.font = 'bold 24px system-ui, sans-serif'
   const takerLabel = takerENS || truncate(taker)
-  ctx.fillText(takerLabel, rightX + sideWidth / 2, headerY + 22)
+  ctx.fillText(takerLabel, rightX + sideWidth / 2, headerY + 24)
 
   // Dividers
   ctx.strokeStyle = DIVIDER
   ctx.lineWidth = 1
   ctx.beginPath()
-  ctx.moveTo(leftX + 20, headerY + 38)
-  ctx.lineTo(leftX + sideWidth - 20, headerY + 38)
+  ctx.moveTo(leftX + 20, headerY + 44)
+  ctx.lineTo(leftX + sideWidth - 20, headerY + 44)
   ctx.stroke()
   ctx.beginPath()
-  ctx.moveTo(rightX + 20, headerY + 38)
-  ctx.lineTo(rightX + sideWidth - 20, headerY + 38)
+  ctx.moveTo(rightX + 20, headerY + 44)
+  ctx.lineTo(rightX + sideWidth - 20, headerY + 44)
   ctx.stroke()
 
   // Draw assets
   const tileGap = 12
-  const assetsY = headerY + 56
+  const assetsY = headerY + 62
   const availableHeight = sideY + sideHeight - assetsY - 20 // space below header to bottom of box
 
   async function drawSideAssets(items, sideX, sW) {
-    // Scale tile size based on item count — fill the box for 1-2 items
-    let tileSize
-    const labelHeight = 28
-    if (items.length <= 2) {
-      // Fit to available height (single row)
-      tileSize = Math.min(availableHeight - labelHeight - 20, sW / 2 - 40, 240)
+    // Scale tile size based on item count — fill the box for 1 item, 2 per row for 2+
+    let tileSize, maxPerRow
+    if (items.length === 1) {
+      tileSize = Math.min(Math.floor((availableHeight - 30) / 1.18), sW - 40)
+      maxPerRow = 1
     } else {
-      tileSize = 100
+      // 2+ items: lay out 2 per row
+      const numRows = Math.ceil(items.length / 2)
+      const maxByWidth = Math.floor((sW - 40) / 2 - tileGap)
+      const maxByHeight = Math.floor((availableHeight - 30 - (numRows - 1) * tileGap) / (numRows * 1.18))
+      tileSize = Math.min(maxByWidth, maxByHeight)
+      maxPerRow = 2
     }
-
-    const maxPerRow = Math.max(1, Math.floor((sW - 40) / (tileSize + tileGap)))
+    const actualLabelHeight = Math.min(Math.round(tileSize * 0.08 + 4), 24) + 14
     const rows = []
     for (let i = 0; i < items.length; i += maxPerRow) {
       rows.push(items.slice(i, i + maxPerRow))
     }
 
     // Vertically center rows in available space
-    const rowHeight = tileSize + labelHeight + tileGap
+    const rowHeight = tileSize + actualLabelHeight + tileGap
     const totalRowsHeight = rows.length * rowHeight - tileGap
     let rowY = assetsY + Math.max(0, (availableHeight - totalRowsHeight) / 2)
 

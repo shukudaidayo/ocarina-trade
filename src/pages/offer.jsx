@@ -61,6 +61,7 @@ export default function Offer() {
   const [showVerifyModal, setShowVerifyModal] = useState(false)
   const [unverifiedAssets, setUnverifiedAssets] = useState([])
   const [fillTxHash, setFillTxHash] = useState(null)
+  const [fulfiller, setFulfiller] = useState(null)
   const [shareImageBlob, setShareImageBlob] = useState(null)
   const [shareImageUrl, setShareImageUrl] = useState(null)
   const [generatingImage, setGeneratingImage] = useState(false)
@@ -107,13 +108,27 @@ export default function Offer() {
     return () => { cancelled = true }
   }, [orderData, chainId])
 
-  // Fetch fill transaction hash for filled orders
+  // Fetch fill transaction hash + fulfiller address for filled orders
   useEffect(() => {
     if (!orderData || statusLabel !== 'filled') return
     let cancelled = false
     const offerer = orderData.order.parameters.offerer
-    getFillTxHash(Number(chainId), orderData.orderHash, offerer).then((hash) => {
-      if (!cancelled && hash) setFillTxHash(hash)
+    const cid = Number(chainId)
+    getFillTxHash(cid, orderData.orderHash, offerer).then(async (hash) => {
+      if (cancelled || !hash) return
+      setFillTxHash(hash)
+      // Resolve fulfiller from tx.from when taker is open (zero address)
+      if (orderData.taker === ZERO_ADDRESS) {
+        try {
+          const chain = CHAINS[cid]
+          if (chain) {
+            const { JsonRpcProvider } = await import('ethers')
+            const provider = new JsonRpcProvider(chain.rpcUrl)
+            const tx = await provider.getTransaction(hash)
+            if (!cancelled && tx?.from) setFulfiller(tx.from)
+          }
+        } catch {}
+      }
     })
     return () => { cancelled = true }
   }, [orderData, statusLabel, chainId])
@@ -121,6 +136,11 @@ export default function Offer() {
   // Generate share image when offer is filled
   useEffect(() => {
     if (!orderData || statusLabel !== 'filled') return
+    // Wait for fulfiller to be resolved on open offers
+    const isOpen = orderData.taker === ZERO_ADDRESS
+    if (isOpen && !fulfiller) return
+    const effectiveTaker = isOpen ? fulfiller : orderData.taker
+
     let cancelled = false
     setGeneratingImage(true)
 
@@ -162,7 +182,7 @@ export default function Offer() {
       // Resolve ENS names
       const [makerENS, takerENS] = await Promise.all([
         resolveENS(params.offerer),
-        orderData.taker !== ZERO_ADDRESS ? resolveENS(orderData.taker) : Promise.resolve(null),
+        resolveENS(effectiveTaker),
       ])
 
       if (cancelled) return
@@ -170,7 +190,7 @@ export default function Offer() {
       const blob = await generateTradeImage({
         maker: params.offerer,
         makerENS,
-        taker: orderData.taker,
+        taker: effectiveTaker,
         takerENS,
         chainId: cid,
         offerItems,
@@ -188,7 +208,7 @@ export default function Offer() {
     return () => {
       cancelled = true
     }
-  }, [orderData, statusLabel, chainId])
+  }, [orderData, statusLabel, chainId, fulfiller])
 
   // Clean up object URL
   useEffect(() => {
@@ -445,11 +465,11 @@ export default function Offer() {
         </div>
         <div className="offer-party">
           <h3 className="party-address">
-            {taker === ZERO_ADDRESS ? (
+            {taker === ZERO_ADDRESS && !fulfiller ? (
               <>From Anyone</>
             ) : (
               <>
-                From <AddressDisplay address={taker} chainId={Number(chainId)} />
+                From <AddressDisplay address={fulfiller || taker} chainId={Number(chainId)} />
                 {isTaker && <span className="you-badge">you</span>}
               </>
             )}
