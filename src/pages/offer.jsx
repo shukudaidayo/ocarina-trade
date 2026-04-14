@@ -405,9 +405,10 @@ export default function Offer() {
   const taker = orderData.taker
   const isExpired = statusLabel === 'expired'
   const isMaker = wallet && wallet.address.toLowerCase() === maker.toLowerCase()
+  const effectiveTaker = fulfiller || taker
   const isTaker = wallet && (
-    taker === ZERO_ADDRESS ||
-    wallet.address.toLowerCase() === taker.toLowerCase()
+    (taker === ZERO_ADDRESS && !fulfiller) ||
+    wallet.address.toLowerCase() === effectiveTaker.toLowerCase()
   )
   const isOpen = statusLabel === 'open'
   const isRestricted = taker !== ZERO_ADDRESS
