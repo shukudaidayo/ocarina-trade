@@ -25,6 +25,9 @@ CLAUDE.md
 SPEC-CREATE-FLOW.md
 SPEC-OG.md
 
+# Audit reports — tracked privately until findings are addressed in a redeploy
+*audit-report*.md
+
 # OS
 .DS_Store
 Thumbs.db

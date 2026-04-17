@@ -198,6 +198,47 @@ export async function createOrder(rawProvider, chainId, {
 }
 
 /**
+ * Verify an OrderRegistered event and extract authenticated fields.
+ *
+ * The OTCZone contract only binds `orderHash` + `maker` via signature — every
+ * other event field (`taker`, `orderURI`, `memo`) is forgeable by anyone who
+ * observed a maker's public signature. We re-anchor trust by recomputing the
+ * Seaport order hash from the decoded orderURI: if it matches `orderHash`,
+ * the decoded order is cryptographically the exact order the maker signed, so
+ * `offerer`, `offer`, `consideration`, and `zoneHash` (→ taker) are safe to use.
+ *
+ * Returns null when verification fails — caller should skip the event.
+ *
+ * Residual risk: `memo` is not covered by any onchain hash and remains
+ * unauthenticated. See SPEC-SEAPORT.md § Contract Upgrades for the deferred
+ * contract-side fix (bind all registration fields into a typed EIP-712 digest).
+ */
+function verifyAndExtract(parsedOrLog, chainId) {
+  const args = parsedOrLog.args
+  let order
+  try { order = JSON.parse(atob(args.orderURI)) } catch { return null }
+  if (!order?.parameters) return null
+
+  let computedHash
+  try { computedHash = getReadSeaport(chainId).getOrderHash(order.parameters) }
+  catch { return null }
+  if (computedHash.toLowerCase() !== args.orderHash.toLowerCase()) return null
+
+  // Derive taker from the decoded order's zoneHash — identical to the contract's
+  // `address(uint160(uint256(zoneHash)))` cast. Ignore the event's taker field.
+  const zoneHash = order.parameters.zoneHash || ZeroHash
+  const taker = '0x' + zoneHash.slice(-40).toLowerCase()
+
+  return {
+    orderHash: args.orderHash,
+    maker: order.parameters.offerer,
+    taker,
+    memo: args.memo || '',
+    order,
+  }
+}
+
+/**
  * Fetch order data from a registerOrder transaction hash.
  * Returns the parsed OrderRegistered event data + decoded signed order.
  */
@@ -211,20 +252,12 @@ export async function getOrderFromTx(chainId, txHash) {
 
     const iface = new Interface(ZONE_ABI)
     for (const log of receipt.logs) {
-      try {
-        const parsed = iface.parseLog(log)
-        if (parsed?.name === 'OrderRegistered') {
-          const order = JSON.parse(atob(parsed.args.orderURI))
-          return {
-            zoneAddress: receipt.to,
-            orderHash: parsed.args.orderHash,
-            maker: parsed.args.maker,
-            taker: parsed.args.taker,
-            memo: parsed.args.memo || '',
-            order,
-          }
-        }
-      } catch {}
+      let parsed
+      try { parsed = iface.parseLog(log) } catch { continue }
+      if (parsed?.name !== 'OrderRegistered') continue
+      const extracted = verifyAndExtract(parsed, chainId)
+      if (!extracted) throw new Error('Order registration failed verification — the event does not match the signed order.')
+      return { zoneAddress: receipt.to, ...extracted }
     }
     throw new Error('No OrderRegistered event found in transaction')
   })
@@ -282,18 +315,37 @@ export async function queryOrderEvents(chainId, zoneAddress) {
   const chain = CHAINS[chainId]
   if (!chain) throw new Error(`Unsupported chain ${chainId}`)
 
-  // Try Blockscout first — full archive, no API key needed
+  let registrations = null
   if (chain.blockscoutApi) {
     try {
-      const registrations = await queryViaBlockscout(chainId, zoneAddress, chain)
-      if (registrations !== null) return registrations
+      registrations = await queryViaBlockscout(chainId, zoneAddress, chain)
     } catch (err) {
       console.warn('Blockscout query failed, falling back to RPC:', err.message)
     }
   }
+  if (registrations === null) registrations = await queryViaRpc(chainId, zoneAddress, chain)
 
-  // Fallback: scan recent blocks via RPC
-  return queryViaRpc(chainId, zoneAddress, chain)
+  return dedupeByOrderHash(registrations)
+}
+
+/**
+ * Dedupe OrderRegistered events by orderHash, keeping the earliest registration
+ * (lowest block, then lowest logIndex). Blocks replay-overwrite spoofing: the
+ * legitimate maker's registration lands onchain before any attacker can observe
+ * the signature, so first-seen wins rejects every forged duplicate.
+ */
+function dedupeByOrderHash(registrations) {
+  const byHash = new Map()
+  for (const r of registrations) {
+    const existing = byHash.get(r.orderHash)
+    if (!existing) { byHash.set(r.orderHash, r); continue }
+    const earlier = r.blockNumber < existing.blockNumber
+      || (r.blockNumber === existing.blockNumber && (r.logIndex ?? 0) < (existing.logIndex ?? 0))
+    if (earlier) byHash.set(r.orderHash, r)
+  }
+  const deduped = Array.from(byHash.values())
+  if (registrations._partial) deduped._partial = true
+  return deduped
 }
 
 async function queryViaBlockscout(chainId, zoneAddress, chain) {
@@ -326,22 +378,17 @@ async function queryViaBlockscout(chainId, zoneAddress, chain) {
           const receipt = await retry(() => provider.getTransactionReceipt(tx.hash))
           if (!receipt) return null
           for (const log of receipt.logs) {
-            try {
-              const parsed = iface.parseLog(log)
-              if (parsed?.name === 'OrderRegistered') {
-                let order = null
-                try { order = JSON.parse(atob(parsed.args.orderURI)) } catch {}
-                return {
-                  orderHash: parsed.args.orderHash,
-                  maker: parsed.args.maker,
-                  taker: parsed.args.taker,
-                  memo: parsed.args.memo || '',
-                  order,
-                  blockNumber: receipt.blockNumber,
-                  transactionHash: receipt.hash,
-                }
-              }
-            } catch {}
+            let parsed
+            try { parsed = iface.parseLog(log) } catch { continue }
+            if (parsed?.name !== 'OrderRegistered') continue
+            const extracted = verifyAndExtract(parsed, chainId)
+            if (!extracted) continue
+            return {
+              ...extracted,
+              blockNumber: receipt.blockNumber,
+              transactionHash: receipt.hash,
+              logIndex: log.logIndex ?? log.index,
+            }
           }
         } catch (err) {
           console.warn('Failed to fetch receipt for', tx.hash, err.message)
@@ -381,18 +428,15 @@ async function queryViaRpc(chainId, zoneAddress, chain) {
     logs.push(...chunks.flat())
   }
 
-  const registrations = logs.map((log) => {
-    let order = null
-    try { order = JSON.parse(atob(log.args.orderURI)) } catch {}
-    return {
-      orderHash: log.args.orderHash,
-      maker: log.args.maker,
-      taker: log.args.taker,
-      memo: log.args.memo || '',
-      order,
+  const registrations = logs.flatMap((log) => {
+    const extracted = verifyAndExtract(log, chainId)
+    if (!extracted) return []
+    return [{
+      ...extracted,
       blockNumber: log.blockNumber,
       transactionHash: log.transactionHash,
-    }
+      logIndex: log.index,
+    }]
   })
 
   // Mark as partial so the UI can show a disclaimer

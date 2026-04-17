@@ -309,6 +309,7 @@ Key points:
 - Verification modal on trade acceptance: when a user clicks "Accept Trade", NFTs the taker is receiving (maker's offer items) are checked for verification status. If any are unverified, a modal lists them with OpenSea links and requires explicit confirmation ("Accept Anyway") before proceeding. Verified-only trades proceed directly.
 - Inline unverified warning on offer creation: the review step shows a yellow warning box on any unverified NFT, linking to OpenSea for verification before signing.
 - ERC-20 whitelist enforced at three layers (frontend, registration, fulfillment) — prevents impostor token scams
+- **Event re-anchoring.** `OrderRegistered` event fields other than `orderHash` + `maker` are not cryptographically bound to the maker's signature in the current contract. The frontend (`verifyAndExtract` in `src/lib/contract.js`) re-anchors trust by recomputing `seaport.getOrderHash(decode(orderURI))` and discarding any event whose decoded order does not match `event.orderHash`. `taker` is derived from the decoded order's `zoneHash`, and events are deduped by `orderHash` (earliest-wins) to block replay-overwrite spoofing of the offers list. Memo remains unauthenticated — see §9 "OTCZone Contract Upgrades (Post-Audit)" for the deferred contract-side fix.
 
 ### Spam NFT Detection
 
@@ -414,6 +415,85 @@ All contracts deployed via CREATE2 (Nick's Factory at `0x4e59b44847b379578588920
 ---
 
 ## 9. Future Roadmap
+
+### OTCZone Contract Upgrades (Post-Audit)
+
+Deferred contract-side fixes surfaced by the 2026-04-15 Pashov AI security review
+(`ocarina-trade-pashov-ai-audit-report-20260415-184837.md`). No funds are at risk
+in any of these findings — Seaport still enforces the true signed order parameters
+at settlement. Frontend mitigations are already in place (see below); bundle the
+contract fixes into the next redeploy to close the residual gaps.
+
+**Finding 1 — `registerOrder` signature only binds `orderHash`** (conf 90). The
+EIP-712 digest covers only the order hash, so `taker`, `offer`, `consideration`,
+`orderURI`, and `memo` in the `OrderRegistered` event are forgeable by anyone who
+observed a maker's public signature. A replay-with-spoofed-metadata attack lets
+an attacker publish phishing listings attributed to a real maker's address.
+
+- *Frontend mitigation (shipped):* `verifyAndExtract` in `src/lib/contract.js`
+  recomputes `seaport.getOrderHash(decode(orderURI).parameters)` and discards any
+  event whose decoded order does not match `event.orderHash`. Taker is derived
+  from the decoded order's `zoneHash`, not the event field. Registrations are
+  deduped by `orderHash`, earliest-wins, neutralizing replay-overwrite spoofing
+  in the offers list.
+- *Residual risk (accepted):* `memo` is not part of the Seaport order hash, so
+  no client-side derivation authenticates it. An attacker who front-runs a
+  maker's registration on Ethereum mainnet (via Flashbots) could inject a
+  spoofed memo that survives earliest-wins dedup. Low likelihood: costs gas for
+  a phishing-only payoff, and L2s with single sequencers (Base, Ink, Polygon)
+  make front-running impractical.
+- *Contract fix:* bind every registration field into a typed EIP-712 digest —
+  see the audit report's proposed diff. A simpler alternative (`require(msg.sender == reg.maker)`)
+  also works but breaks the documented gas-sponsor / smart-wallet relayer path.
+
+**Finding 2 — No registration replay guard.** The same `(maker, orderHash, signature)`
+triple can be submitted unbounded times. In isolation this is just event spam;
+combined with finding 1 it amplifies the impact.
+
+- *Contract fix:* add `mapping(bytes32 => bool) registered` keyed on
+  `orderHash`, revert in `registerOrder` if already set.
+
+**Finding 3 — Zone callbacks are publicly callable.** `authorizeOrder` and
+`validateOrder` have no `msg.sender == seaport` guard. Both are `pure`/`view`
+so there is no onchain side effect, but an offchain integrator using
+`validateOrder` as a "would Seaport accept this?" oracle can be fed arbitrary
+`ZoneParameters`. Not a fund path; a foot-gun for future integrators.
+
+- *Contract fix:* add `if (msg.sender != seaport) revert Unauthorized();` to
+  both callbacks.
+
+**Finding 4 — `zoneHash` upper 96 bits silently truncated.** `validateOrder`
+casts `address(uint160(uint256(zoneHash)))`, discarding the upper 12 bytes.
+The current convention of right-aligning the taker address is load-bearing
+and documented in §3.1, but a third-party SDK packing commitment data into
+the upper bits would find it silently unenforced.
+
+- *Contract fix (optional):* `require(uint256(zoneHash) >> 160 == 0)` to
+  surface misuse loudly. Cheap, but locks in the convention forever.
+
+**Finding 5 — Cached `_domainSeparator` may diverge on chain fork.** OTCZone
+caches the domain separator at construction; Seaport 1.6 recomputes on the fly
+when `block.chainid` differs from its own cache. Post-fork registrations would
+validate against the wrong domain. Registration-layer only, no fund path.
+
+- *Contract fix:* recompute the domain separator on demand (small gas cost per
+  `registerOrder`), or accept the fork-layer drift as out-of-scope.
+
+**Finding 6 — All zone enforcement happens post-transfer in `validateOrder`.**
+`authorizeOrder` returns unconditionally, so taker restriction and ERC-20
+whitelist are checked only after Seaport has executed transfers. Seaport still
+reverts the whole tx atomically if `validateOrder` reverts — funds are never
+lost — but transfer hooks (ERC-777, ERC-1155 `onERC1155Received`) get an
+execution window before the revert. Worth re-evaluating if Seaport expands
+its item-type set.
+
+- *Contract fix:* move taker restriction into `authorizeOrder` so it runs
+  pre-transfer. Whitelist still runs post-transfer (item types are known only
+  at settlement time).
+
+All six fixes are mutually independent. The next redeploy should bundle at
+minimum findings 1 + 2 (the spoofing pair) and 3 (one-line foot-gun). New
+CREATE2 vanity addresses will need to be mined via Nick's Factory.
 
 ### Taker Refusal
 - Allow the designated taker of a directed offer to refuse it, marking it as unfillable and removing it from open offers.
