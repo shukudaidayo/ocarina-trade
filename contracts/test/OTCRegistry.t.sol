@@ -3,16 +3,28 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {OTCRegistry, OrderRegistration} from "../src/OTCRegistry.sol";
-import {ZoneParameters, SpentItem, ReceivedItem, Schema, OrderComponents, OfferItem, ConsiderationItem} from "seaport-types/lib/ConsiderationStructs.sol";
+import {ZoneParameters, SpentItem, ReceivedItem, Schema, OrderComponents, Order, OfferItem, ConsiderationItem} from "seaport-types/lib/ConsiderationStructs.sol";
 import {ItemType, OrderType} from "seaport-types/lib/ConsiderationEnums.sol";
 import {ZoneInterface} from "seaport-types/interfaces/ZoneInterface.sol";
 
 /// @dev Minimal Seaport mock. Returns keccak256(abi.encode(order)) as the hash
 /// so tests can compute the expected hash locally without reimplementing Seaport's
-/// full EIP-712 derivation.
+/// full EIP-712 derivation. validate() accepts all signatures by default; set
+/// shouldRejectValidate = true to simulate an invalid Seaport signature.
 contract MockSeaport {
+    bool public shouldRejectValidate;
+
+    function setRejectValidate(bool reject) external {
+        shouldRejectValidate = reject;
+    }
+
     function getOrderHash(OrderComponents calldata order) external pure returns (bytes32) {
         return keccak256(abi.encode(order));
+    }
+
+    function validate(Order[] calldata) external view returns (bool) {
+        require(!shouldRejectValidate, "invalid seaport sig");
+        return true;
     }
 }
 
@@ -421,6 +433,14 @@ contract OTCRegistryTest is Test {
         reg.memo = "evil memo";
 
         vm.expectRevert(OTCRegistry.InvalidSignature.selector);
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsInvalidSeaportSignature() public {
+        OrderRegistration memory reg = _signedReg(taker, "");
+        mockSeaport.setRejectValidate(true);
+
+        vm.expectRevert();
         zone.registerOrder(reg);
     }
 

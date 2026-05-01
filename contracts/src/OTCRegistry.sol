@@ -2,13 +2,14 @@
 pragma solidity 0.8.28;
 
 import {ZoneInterface} from "seaport-types/interfaces/ZoneInterface.sol";
-import {ZoneParameters, Schema, OrderComponents, OfferItem, ConsiderationItem} from "seaport-types/lib/ConsiderationStructs.sol";
+import {ZoneParameters, Schema, OrderComponents, OrderParameters, Order, OfferItem, ConsiderationItem} from "seaport-types/lib/ConsiderationStructs.sol";
 import {ItemType, OrderType} from "seaport-types/lib/ConsiderationEnums.sol";
 import {EIP712} from "solady/utils/EIP712.sol";
 import {SignatureCheckerLib} from "solady/utils/SignatureCheckerLib.sol";
 
 interface ISeaport {
     function getOrderHash(OrderComponents calldata order) external view returns (bytes32);
+    function validate(Order[] calldata orders) external returns (bool);
 }
 
 struct OrderRegistration {
@@ -119,6 +120,29 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         bytes32 digest = _hashTypedData(structHash);
 
         if (!SignatureCheckerLib.isValidSignatureNow(maker, digest, reg.signature)) revert InvalidSignature();
+
+        // Validate the Seaport signature via Seaport itself. This prevents publishing
+        // an unfillable offer and — as a side effect — marks the order pre-validated in
+        // Seaport's storage, reducing taker gas at fill time (Seaport skips sig
+        // re-verification for pre-validated orders).
+        Order[] memory orders = new Order[](1);
+        orders[0] = Order({
+            parameters: OrderParameters({
+                offerer: reg.components.offerer,
+                zone: reg.components.zone,
+                offer: reg.components.offer,
+                consideration: reg.components.consideration,
+                orderType: reg.components.orderType,
+                startTime: reg.components.startTime,
+                endTime: reg.components.endTime,
+                zoneHash: reg.components.zoneHash,
+                salt: reg.components.salt,
+                conduitKey: reg.components.conduitKey,
+                totalOriginalConsiderationItems: reg.components.consideration.length
+            }),
+            signature: reg.seaportSignature
+        });
+        ISeaport(seaport).validate(orders);
 
         address taker = address(uint160(uint256(reg.components.zoneHash)));
 
