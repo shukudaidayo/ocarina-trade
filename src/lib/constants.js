@@ -10,7 +10,7 @@ export const CHAINS = {
 // Seaport 1.6 canonical address (same on all chains)
 export const SEAPORT_ADDRESS = '0x0000000000000068F116a894984e2DB1123eB395'
 
-// OTCZone contract addresses per chain
+// OTCRegistry contract addresses per chain
 export const ZONE_ADDRESSES = {
   1: '0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc',
   8453: '0x07C00000090AdB1D14b093C1A6b40135779af27C',
@@ -18,7 +18,7 @@ export const ZONE_ADDRESSES = {
   57073: '0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52',
 }
 
-// Block number at or before OTCZone deployment — used as fromBlock for event queries
+// Block number at or before OTCRegistry deployment — used as fromBlock for event queries
 export const ZONE_DEPLOY_BLOCKS = {
   1: 24694574,
   8453: 43637380,
@@ -53,7 +53,46 @@ export const WHITELISTED_ERC20 = {
   },
 }
 
-// OTCZone ABI — only the parts we call from the frontend
+const ORDER_COMPONENTS_ABI = {
+  name: 'components',
+  type: 'tuple',
+  components: [
+    { name: 'offerer', type: 'address' },
+    { name: 'zone', type: 'address' },
+    {
+      name: 'offer',
+      type: 'tuple[]',
+      components: [
+        { name: 'itemType', type: 'uint8' },
+        { name: 'token', type: 'address' },
+        { name: 'identifierOrCriteria', type: 'uint256' },
+        { name: 'startAmount', type: 'uint256' },
+        { name: 'endAmount', type: 'uint256' },
+      ],
+    },
+    {
+      name: 'consideration',
+      type: 'tuple[]',
+      components: [
+        { name: 'itemType', type: 'uint8' },
+        { name: 'token', type: 'address' },
+        { name: 'identifierOrCriteria', type: 'uint256' },
+        { name: 'startAmount', type: 'uint256' },
+        { name: 'endAmount', type: 'uint256' },
+        { name: 'recipient', type: 'address' },
+      ],
+    },
+    { name: 'orderType', type: 'uint8' },
+    { name: 'startTime', type: 'uint256' },
+    { name: 'endTime', type: 'uint256' },
+    { name: 'zoneHash', type: 'bytes32' },
+    { name: 'salt', type: 'uint256' },
+    { name: 'conduitKey', type: 'bytes32' },
+    { name: 'counter', type: 'uint256' },
+  ],
+}
+
+// OTCRegistry ABI — only the parts we call from the frontend
 export const ZONE_ABI = [
   {
     type: 'function',
@@ -63,32 +102,9 @@ export const ZONE_ABI = [
         name: 'reg',
         type: 'tuple',
         components: [
-          { name: 'orderHash', type: 'bytes32' },
-          { name: 'maker', type: 'address' },
-          { name: 'taker', type: 'address' },
-          {
-            name: 'offer',
-            type: 'tuple[]',
-            components: [
-              { name: 'itemType', type: 'uint8' },
-              { name: 'token', type: 'address' },
-              { name: 'identifier', type: 'uint256' },
-              { name: 'amount', type: 'uint256' },
-            ],
-          },
-          {
-            name: 'consideration',
-            type: 'tuple[]',
-            components: [
-              { name: 'itemType', type: 'uint8' },
-              { name: 'token', type: 'address' },
-              { name: 'identifier', type: 'uint256' },
-              { name: 'amount', type: 'uint256' },
-              { name: 'recipient', type: 'address' },
-            ],
-          },
+          ORDER_COMPONENTS_ABI,
+          { name: 'seaportSignature', type: 'bytes' },
           { name: 'signature', type: 'bytes' },
-          { name: 'orderURI', type: 'string' },
           { name: 'memo', type: 'string' },
         ],
       },
@@ -103,7 +119,8 @@ export const ZONE_ABI = [
       { name: 'orderHash', type: 'bytes32', indexed: true },
       { name: 'maker', type: 'address', indexed: true },
       { name: 'taker', type: 'address', indexed: true },
-      { name: 'orderURI', type: 'string', indexed: false },
+      { ...ORDER_COMPONENTS_ABI, indexed: false },
+      { name: 'seaportSignature', type: 'bytes', indexed: false },
       { name: 'memo', type: 'string', indexed: false },
     ],
     anonymous: false,

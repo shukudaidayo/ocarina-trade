@@ -23,7 +23,7 @@ const questions = [
   {
     id: 'audit',
     q: 'Is the Ocarina smart contract audited?',
-    a: ({ zoneLinks }) => <><p>Seaport contracts are <a href="https://github.com/trailofbits/publications/blob/master/reviews/SeaportProtocol.pdf" target="_blank" rel="noopener noreferrer">fully audited</a>.</p><p>Besides Seaport, Ocarina relies on a small smart contract, OTCZone, to post offers onchain and limit which cash tokens can be included in Ocarina offers. Although this contract hasn't been audited, it isn't in the flow of assets — even if it does somehow get rekt, your assets are safe.</p><p>The OTCZone contract is deployed at the addresses below:</p>{zoneLinks}</>,
+    a: ({ zoneLinks }) => <><p>Seaport contracts are <a href="https://github.com/trailofbits/publications/blob/master/reviews/SeaportProtocol.pdf" target="_blank" rel="noopener noreferrer">fully audited</a>.</p><p>Besides Seaport, Ocarina relies on a small smart contract, OTCRegistry, to post offers onchain and limit which cash tokens can be included in Ocarina offers. Although this contract hasn't been audited, it isn't in the flow of assets — even if it does somehow get rekt, your assets are safe.</p><p>The OTCRegistry contract is deployed at the addresses below:</p>{zoneLinks}</>,
   },
   {
     id: 'assets',

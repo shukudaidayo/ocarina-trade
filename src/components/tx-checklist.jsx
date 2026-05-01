@@ -36,9 +36,9 @@ export default function TxChecklist({ steps }) {
 
 /**
  * Build the list of steps for approvals + action(s).
- * One approval step per unique token contract, then one or two action steps.
+ * One approval step per unique token contract, then one step per action label.
  */
-export function buildSteps(assets, actionLabel, actionLabel2) {
+export function buildSteps(assets, ...actionLabels) {
   const steps = []
   const seen = new Set()
 
@@ -56,18 +56,9 @@ export function buildSteps(assets, actionLabel, actionLabel2) {
     }
   }
 
-  steps.push({
-    label: actionLabel,
-    status: 'pending',
-    type: 'action',
-  })
-
-  if (actionLabel2) {
-    steps.push({
-      label: actionLabel2,
-      status: 'pending',
-      type: 'action',
-    })
+  for (const label of actionLabels) {
+    if (!label) continue
+    steps.push({ label, status: 'pending', type: 'action' })
   }
 
   return steps

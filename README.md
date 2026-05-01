@@ -14,12 +14,12 @@ Peer-to-peer OTC trades for NFTs and tokens. No backend, no accounts, no middlem
 
 All trade logic is handled by [Seaport](https://github.com/ProjectOpenSea/seaport) (v1.6), OpenSea's audited, immutable, on-chain settlement protocol. Orders are signed off-chain (free, no gas) and settled atomically on-chain when accepted.
 
-The only custom contract is **OTCZone** (~135 lines), which:
+The only custom contract is **OTCRegistry** (~135 lines), which:
 - Restricts who can fill an order (optional taker address)
 - Enforces an ERC-20 whitelist (prevents impostor token scams)
 - Emits events for order discovery (the offers page)
 
-OTCZone never touches user funds. Assets stay in your wallet until the trade executes.
+OTCRegistry never touches user funds. Assets stay in your wallet until the trade executes.
 
 ## Contracts
 
@@ -42,7 +42,7 @@ OTCZone never touches user funds. Assets stay in your wallet until the trade exe
 
 - **Chains**: Ethereum, Base, Polygon, Ink
 - **Settlement**: Seaport 1.6 (immutable, canonical address across all chains)
-- **Custom contract**: OTCZone (Solidity 0.8.28, Foundry)
+- **Custom contract**: OTCRegistry (Solidity 0.8.28, Foundry)
 - **Frontend**: React, ethers.js, Vite — static site, no server required
 - **Wallet**: Reown AppKit (MetaMask, WalletConnect, Coinbase Wallet, etc.)
 - **Identity**: ENS forward and reverse resolution

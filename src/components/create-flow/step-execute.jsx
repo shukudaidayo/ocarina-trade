@@ -38,7 +38,7 @@ export default function StepExecute({ wallet, onComplete }) {
     setError(null)
     setRunning(true)
 
-    const txSteps = buildSteps(makerAssets, 'Sign Order', 'Register Order')
+    const txSteps = buildSteps(makerAssets, 'Sign Order', 'Sign Listing', 'Register Order')
     setSteps([...txSteps])
 
     function updateStep(index, update) {
@@ -76,9 +76,12 @@ export default function StepExecute({ wallet, onComplete }) {
         updateStep(stepIndex, { status: 'done' })
       }
 
-      // Sign order
-      const signIndex = txSteps.length - 2
-      updateStep(signIndex, { status: 'signing' })
+      // Sign Seaport order, then sign OTCRegistry listing, then register onchain
+      const signOrderIndex = txSteps.length - 3
+      const signListingIndex = txSteps.length - 2
+      const registerIndex = txSteps.length - 1
+
+      updateStep(signOrderIndex, { status: 'signing' })
 
       const expirationValue = expiration
         || Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
@@ -90,13 +93,17 @@ export default function StepExecute({ wallet, onComplete }) {
         expiration: new Date(expirationValue * 1000).toISOString().slice(0, 16),
         makerAddress: wallet.address,
         memo: memo.trim(),
+        onSeaportSigned: () => {
+          updateStep(signOrderIndex, { status: 'done' })
+          updateStep(signListingIndex, { status: 'signing' })
+        },
+        onRegistrationSigned: () => {
+          updateStep(signListingIndex, { status: 'done' })
+          updateStep(registerIndex, { status: 'signing' })
+        },
       }
 
       const { tx, wait } = await createOrder(wallet.provider, chainId, orderParams)
-      updateStep(signIndex, { status: 'done' })
-
-      // Register onchain
-      const registerIndex = txSteps.length - 1
       updateStep(registerIndex, { status: 'confirming' })
       await wait()
       updateStep(registerIndex, { status: 'done' })

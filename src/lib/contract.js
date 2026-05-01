@@ -5,6 +5,15 @@ import { CHAINS, SEAPORT_ADDRESS, ZONE_ADDRESSES, ZONE_DEPLOY_BLOCKS, ZONE_ABI, 
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
+// EIP-712 types for OTCRegistry.registerOrder. Mirrors the typehash in OTCRegistry.sol.
+const REGISTRATION_TYPES = {
+  OrderRegistration: [
+    { name: 'orderHash', type: 'bytes32' },
+    { name: 'seaportSignature', type: 'bytes' },
+    { name: 'memo', type: 'string' },
+  ],
+}
+
 /**
  * Retry an async function up to `n` times with a brief delay between attempts.
  * Only retries on network/RPC errors, not on application-level errors.
@@ -110,7 +119,7 @@ function toSeaportConsiderationItem(asset, recipient, chainId) {
 }
 
 /**
- * Create a Seaport order: sign off-chain + register on OTCZone.
+ * Create a Seaport order: sign off-chain + register on OTCRegistry.
  * Returns { order, tx, wait } where tx is the registerOrder tx.
  */
 export async function createOrder(rawProvider, chainId, {
@@ -120,9 +129,11 @@ export async function createOrder(rawProvider, chainId, {
   expiration,
   makerAddress,
   memo = '',
+  onSeaportSigned,
+  onRegistrationSigned,
 }) {
   const zoneAddress = ZONE_ADDRESSES[chainId]
-  if (!zoneAddress) throw new Error(`No OTCZone deployed on chain ${chainId}`)
+  if (!zoneAddress) throw new Error(`No OTCRegistry deployed on chain ${chainId}`)
 
   const seaport = await getSeaport(rawProvider)
 
@@ -148,46 +159,40 @@ export async function createOrder(rawProvider, chainId, {
   })
 
   const order = await executeAllActions()
+  onSeaportSigned?.()
 
-  // Compute the order hash
+  // Compute the order hash (local seaport-js computation, matches onchain getOrderHash)
   const orderHash = seaport.getOrderHash(order.parameters)
 
-  // Encode the signed order as the orderURI
-  const orderURI = btoa(JSON.stringify(order))
-
-  // Register on OTCZone for discovery
+  // Register on OTCRegistry for discovery
   const signer = await getSigner(rawProvider)
-  const zone = new Contract(zoneAddress, ZONE_ABI, signer)
+  const zoneContract = new Contract(zoneAddress, ZONE_ABI, signer)
 
-  // Build SpentItem[] and ReceivedItem[] from the order parameters
-  const spentItems = order.parameters.offer.map((o) => ({
-    itemType: Number(o.itemType),
-    token: o.token,
-    identifier: BigInt(o.identifierOrCriteria),
-    amount: BigInt(o.startAmount),
-  }))
-
-  const receivedItems = order.parameters.consideration.map((c) => ({
-    itemType: Number(c.itemType),
-    token: c.token,
-    identifier: BigInt(c.identifierOrCriteria),
-    amount: BigInt(c.startAmount),
-    recipient: c.recipient,
-  }))
-
-  const takerAddress = taker && taker !== ZERO_ADDRESS ? taker : ZERO_ADDRESS
-
-  const reg = {
+  // Maker signs (orderHash, seaportSignature, memo) under OTCRegistry's EIP-712 domain.
+  // orderHash transitively binds all OrderComponents fields (including offerer, taker via
+  // zoneHash, and endTime). seaportSignature is bound directly to prevent a front-runner
+  // from substituting a bad Seaport sig using this registration sig.
+  const domain = {
+    name: 'OTCRegistry',
+    version: '1',
+    chainId,
+    verifyingContract: zoneAddress,
+  }
+  const regValue = {
     orderHash,
-    maker: makerAddress,
-    taker: takerAddress,
-    offer: spentItems,
-    consideration: receivedItems,
-    signature: order.signature,
-    orderURI,
+    seaportSignature: order.signature,
     memo,
   }
-  const tx = await zone.registerOrder(reg)
+  const registrationSignature = await signer.signTypedData(domain, REGISTRATION_TYPES, regValue)
+  onRegistrationSigned?.()
+
+  const reg = {
+    components: order.parameters,
+    seaportSignature: order.signature,
+    signature: registrationSignature,
+    memo,
+  }
+  const tx = await zoneContract.registerOrder(reg)
 
   return {
     order,
@@ -198,43 +203,67 @@ export async function createOrder(rawProvider, chainId, {
 }
 
 /**
- * Verify an OrderRegistered event and extract authenticated fields.
- *
- * The OTCZone contract only binds `orderHash` + `maker` via signature — every
- * other event field (`taker`, `orderURI`, `memo`) is forgeable by anyone who
- * observed a maker's public signature. We re-anchor trust by recomputing the
- * Seaport order hash from the decoded orderURI: if it matches `orderHash`,
- * the decoded order is cryptographically the exact order the maker signed, so
- * `offerer`, `offer`, `consideration`, and `zoneHash` (→ taker) are safe to use.
- *
- * Returns null when verification fails — caller should skip the event.
- *
- * Residual risk: `memo` is not covered by any onchain hash and remains
- * unauthenticated. See SPEC-SEAPORT.md § Contract Upgrades for the deferred
- * contract-side fix (bind all registration fields into a typed EIP-712 digest).
+ * Convert ABI-decoded OrderComponents (ethers Result with BigInt values) to the
+ * plain-object format seaport-js expects for fulfillOrder and getOrderHash.
  */
-function verifyAndExtract(parsedOrLog, chainId) {
-  const args = parsedOrLog.args
-  let order
-  try { order = JSON.parse(atob(args.orderURI)) } catch { return null }
-  if (!order?.parameters) return null
-
-  let computedHash
-  try { computedHash = getReadSeaport(chainId).getOrderHash(order.parameters) }
-  catch { return null }
-  if (computedHash.toLowerCase() !== args.orderHash.toLowerCase()) return null
-
-  // Derive taker from the decoded order's zoneHash — identical to the contract's
-  // `address(uint160(uint256(zoneHash)))` cast. Ignore the event's taker field.
-  const zoneHash = order.parameters.zoneHash || ZeroHash
-  const taker = '0x' + zoneHash.slice(-40).toLowerCase()
-
+function componentsFromEvent(c) {
+  const consideration = Array.from(c.consideration).map((item) => ({
+    itemType: Number(item.itemType),
+    token: item.token,
+    identifierOrCriteria: item.identifierOrCriteria.toString(),
+    startAmount: item.startAmount.toString(),
+    endAmount: item.endAmount.toString(),
+    recipient: item.recipient,
+  }))
   return {
-    orderHash: args.orderHash,
-    maker: order.parameters.offerer,
-    taker,
-    memo: args.memo || '',
-    order,
+    offerer: c.offerer,
+    zone: c.zone,
+    offer: Array.from(c.offer).map((item) => ({
+      itemType: Number(item.itemType),
+      token: item.token,
+      identifierOrCriteria: item.identifierOrCriteria.toString(),
+      startAmount: item.startAmount.toString(),
+      endAmount: item.endAmount.toString(),
+    })),
+    consideration,
+    orderType: Number(c.orderType),
+    startTime: c.startTime.toString(),
+    endTime: c.endTime.toString(),
+    zoneHash: c.zoneHash,
+    salt: c.salt.toString(),
+    conduitKey: c.conduitKey,
+    counter: c.counter.toString(),
+    // seaport-js OrderComponents extends OrderParameters, which includes this field.
+    // For a standard (non-criteria) order it equals consideration.length.
+    totalOriginalConsiderationItems: consideration.length,
+  }
+}
+
+/**
+ * Decode an OrderRegistered event and recover the full Seaport order.
+ *
+ * The contract now verifies zone, orderType, taker/zoneHash alignment, and
+ * derives orderHash via ISeaport.getOrderHash(components) before emitting —
+ * so the event is trustworthy by construction. This function reconstructs the
+ * order object from the structured event fields rather than decoding an opaque
+ * base64 blob, and returns null only if the event data is malformed.
+ */
+function verifyAndExtract(parsedOrLog) {
+  const args = parsedOrLog.args
+  try {
+    const order = {
+      parameters: componentsFromEvent(args.components),
+      signature: args.seaportSignature,
+    }
+    return {
+      orderHash: args.orderHash,
+      maker: args.maker,
+      taker: args.taker,
+      memo: args.memo || '',
+      order,
+    }
+  } catch {
+    return null
   }
 }
 
@@ -255,7 +284,7 @@ export async function getOrderFromTx(chainId, txHash) {
       let parsed
       try { parsed = iface.parseLog(log) } catch { continue }
       if (parsed?.name !== 'OrderRegistered') continue
-      const extracted = verifyAndExtract(parsed, chainId)
+      const extracted = verifyAndExtract(parsed)
       if (!extracted) throw new Error('Order registration failed verification — the event does not match the signed order.')
       return { zoneAddress: receipt.to, ...extracted }
     }
@@ -307,7 +336,7 @@ export async function cancelOrder(rawProvider, orderComponents) {
 }
 
 /**
- * Query all OrderRegistered events from the OTCZone contract.
+ * Query all OrderRegistered events from the OTCRegistry contract.
  * Uses Blockscout API to get tx list, then fetches receipts via RPC.
  * Falls back to scanning recent blocks via RPC if Blockscout is unavailable.
  */
@@ -381,7 +410,7 @@ async function queryViaBlockscout(chainId, zoneAddress, chain) {
             let parsed
             try { parsed = iface.parseLog(log) } catch { continue }
             if (parsed?.name !== 'OrderRegistered') continue
-            const extracted = verifyAndExtract(parsed, chainId)
+            const extracted = verifyAndExtract(parsed)
             if (!extracted) continue
             return {
               ...extracted,
@@ -429,7 +458,7 @@ async function queryViaRpc(chainId, zoneAddress, chain) {
   }
 
   const registrations = logs.flatMap((log) => {
-    const extracted = verifyAndExtract(log, chainId)
+    const extracted = verifyAndExtract(log)
     if (!extracted) return []
     return [{
       ...extracted,
