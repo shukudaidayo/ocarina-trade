@@ -6,18 +6,19 @@ Peer-to-peer OTC trades for NFTs and tokens. No backend, no accounts, no middlem
 
 ## What it does
 
-- **Create an offer** — Select the assets you want to trade (ERC-721, ERC-1155, whitelisted ERC-20, or ETH on the taker side), optionally restrict to a specific taker, and sign the order. A shareable link is generated.
+- **Create an offer** — Select the assets you want to trade (ERC-721, ERC-1155, whitelisted ERC-20, or ETH on the taker side), optionally restrict to a specific taker, sign the order, and publish it on-chain. A shareable link is generated.
 - **View an offer** — Anyone with the link can see both sides of the trade, verify the assets on Etherscan, and check the order status (open, filled, cancelled, expired).
 - **Accept an offer** — The eligible taker approves their assets and executes the atomic trade in a single transaction. Both sides exchange assets simultaneously — no escrow, no partial fills.
 
 ## How it works
 
-All trade logic is handled by [Seaport](https://github.com/ProjectOpenSea/seaport) (v1.6), OpenSea's audited, immutable, on-chain settlement protocol. Orders are signed off-chain (free, no gas) and settled atomically on-chain when accepted.
+Asset transfer and settlement are handled by [Seaport](https://github.com/ProjectOpenSea/seaport) (v1.6), OpenSea's audited, immutable, on-chain settlement protocol. Orders are signed off-chain (free, no gas), registered through OTCRegistry for publication and settlement eligibility, and settled atomically on-chain when accepted.
 
-The only custom contract is **OTCRegistry** (~135 lines), which:
+The only custom contract is **OTCRegistry**, which:
 - Restricts who can fill an order (optional taker address)
 - Enforces an ERC-20 whitelist (prevents impostor token scams)
-- Emits events for order discovery (the offers page)
+- Publishes signed orders through events for the offers page
+- Requires prior registration before an OTCRegistry-zoned order can settle
 
 OTCRegistry never touches user funds. Assets stay in your wallet until the trade executes.
 
@@ -33,7 +34,7 @@ OTCRegistry never touches user funds. Assets stay in your wallet until the trade
 ## Trust model
 
 - **No backend** — all state is on-chain or in the URL. Nothing to maintain, no servers to trust.
-- **No database** — order discovery is powered by on-chain events.
+- **No database** — order publication and discovery are powered by on-chain events.
 - **No escrow** — assets remain in your wallet until the atomic trade.
 - **Audited settlement** — Seaport has been professionally audited and has processed billions in volume.
 - **Open source** — fork it, verify it, run your own.
@@ -42,7 +43,7 @@ OTCRegistry never touches user funds. Assets stay in your wallet until the trade
 
 - **Chains**: Ethereum, Base, Polygon, Ink
 - **Settlement**: Seaport 1.6 (immutable, canonical address across all chains)
-- **Custom contract**: OTCRegistry (Solidity 0.8.28, Foundry)
+- **Custom contract**: OTCRegistry zone/registry (Solidity 0.8.28, Foundry)
 - **Frontend**: React, ethers.js, Vite — static site, no server required
 - **Wallet**: Reown AppKit (MetaMask, WalletConnect, Coinbase Wallet, etc.)
 - **Identity**: ENS forward and reverse resolution

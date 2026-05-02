@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-A peer-to-peer trade website for trading NFTs (and whitelisted ERC-20s) directly between two parties. Uses OpenSea's **Seaport protocol** as the onchain settlement layer, with a minimal custom **OTCRegistry** contract for taker restriction, ERC-20 whitelisting, and order discovery. No backend, no database, no accounts.
+A peer-to-peer trade website for trading NFTs (and whitelisted ERC-20s) directly between two parties. Uses OpenSea's **Seaport protocol** as the onchain settlement layer, with a small custom **OTCRegistry** contract for taker restriction, ERC-20 whitelisting, order publication, and settlement eligibility. No backend, no database, no accounts.
 
 ### Motivation
 
@@ -10,10 +10,10 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 
 ### Why Seaport
 
-- **Near-zero custom contract surface.** The only custom contract (OTCRegistry, ~175 lines) handles taker restriction, ERC-20 whitelisting, signature-verified order discovery — it never touches user funds. Seaport handles all asset transfers.
+- **Small custom contract surface.** The only custom contract, OTCRegistry, handles taker restriction, ERC-20 whitelisting, signature-verified order publication, and settlement eligibility — it never touches user funds. Seaport handles all asset transfers.
 - **Battle-tested security.** Multiple professional audits, billions in volume, years of production use.
 - **No liability.** We are building a frontend, not a protocol. The smart contract layer is OpenSea's responsibility.
-- **Cheap order creation.** Seaport uses offchain EIP-712 signatures — the only gas cost is the OTCRegistry registration transaction for discoverability.
+- **Cheap order creation.** Seaport uses offchain EIP-712 signatures — the only gas cost is the OTCRegistry registration transaction for publication and settlement eligibility.
 - **Richer features for free.** ERC-20 support, criteria-based offers, and multi-chain support come built-in.
 
 ### Design Principles
@@ -70,7 +70,7 @@ OfferItem / ConsiderationItem {
   itemType        // 0=NATIVE, 1=ERC20, 2=ERC721, 3=ERC1155
   token           // Contract address
   identifierOrCriteria  // Token ID (or merkle root for criteria-based)
-  startAmount     // Amount (1 for ERC-721)
+  startAmount     // Amount (must be nonzero; 1 for ERC-721)
   endAmount       // Final amount; Ocarina V1 requires this to equal startAmount
 }
 ```
@@ -83,14 +83,14 @@ For a simple NFT-for-NFT trade:
    - `offer`: The NFTs/tokens the maker is giving
    - `consideration`: The NFTs/tokens the maker wants, with every `recipient` set to the maker's address
    - `orderType`: `FULL_RESTRICTED` (2) — always restricted, so the OTCRegistry validates every order (ERC-20 whitelist + optional taker restriction)
-   - `startAmount == endAmount` for every item — fixed swaps only; variable-price/dutch-style orders are rejected by OTCRegistry
+   - `startAmount == endAmount` and `startAmount > 0` for every item — fixed, nonzero swaps only; variable-price/dutch-style orders and zero-amount items are rejected by OTCRegistry
    - `startTime`: now
-   - `endTime`: expiration timestamp
+   - `endTime`: expiration timestamp; must be greater than or equal to `startTime`
    - `conduitKey`: `bytes32(0)` — use Seaport directly for transfers; nonzero conduit keys are rejected by OTCRegistry
 
 2. **Maker signs the order** using EIP-712 typed data signing (no gas).
 
-3. **Order is registered onchain** via `OTCRegistry.registerOrder()` — one transaction that stores the order for discoverability on the offers page. The signed order is encoded in the transaction as a URI.
+3. **Order is registered onchain** via `OTCRegistry.registerOrder()` — one transaction that publishes the order for the offers page and makes it eligible to settle through OTCRegistry.
 
 4. **Maker shares a URL** containing the chain ID and registration tx hash.
 
@@ -103,16 +103,18 @@ For a simple NFT-for-NFT trade:
 
 **Note:** All orders use `FULL_RESTRICTED` with the OTCRegistry so that ERC-20 whitelist enforcement always applies. Open-to-anyone orders simply set `zoneHash` to `bytes32(0)`.
 
-The **OTCRegistry** is a minimal custom contract (~175 lines) deployed once per chain. It combines three responsibilities: taker restriction, ERC-20 whitelist enforcement, and order registration.
+**Lifecycle invariant:** An order using `zone = OTCRegistry` must successfully pass `registerOrder` before it can settle. Registration enforces order shape and publication authorization; `authorizeOrder` enforces taker restriction; `validateOrder` enforces prior registration and ERC-20 whitelist policy during settlement. A maker can construct and sign a direct Seaport order with `zone = OTCRegistry`, but it cannot settle through OTCRegistry unless the exact `(orderHash, maker)` pair was registered first.
+
+The **OTCRegistry** is a small custom contract deployed once per chain. It combines three responsibilities: taker restriction, ERC-20 whitelist enforcement, and order registration.
 
 Implementation: `contracts/src/OTCRegistry.sol`
 
-The contract implements Seaport 1.6's `ZoneInterface` (from `seaport-types`). It has no owner, no mutable state after construction except the registration replay ledger, no admin functions, and no access to user funds. The constructor takes a list of whitelisted ERC-20 addresses and the Seaport contract address. OTCRegistry owns its EIP-712 domain (`name: "OTCRegistry"`, `version: "1"`) rather than reusing Seaport's; the Seaport address is stored to gate zone callbacks (`msg.sender == seaport`) and to call `ISeaport.getOrderHash` during registration.
+The contract implements Seaport 1.6's `ZoneInterface` (from `seaport-types`). It has no owner, no mutable state after construction except the registration ledger, no admin functions, and no access to user funds. The registration ledger blocks duplicate publication and acts as the settlement allowlist checked during fulfillment. The constructor takes a list of whitelisted ERC-20 addresses and the Seaport contract address. OTCRegistry owns its EIP-712 domain (`name: "OTCRegistry"`, `version: "1"`) rather than reusing Seaport's; the Seaport address is stored to gate zone callbacks (`msg.sender == seaport`) and to call `ISeaport.getOrderHash` during registration.
 
 It serves three purposes:
 1. **Taker validation**: `authorizeOrder` (pre-transfer) checks that the fulfiller matches the allowed taker encoded in the lower 20 bytes of `zoneHash` (the Seaport order's zoneHash, not a registration field). Upper 96 bits are reserved for future use and ignored here.
-2. **ERC-20 whitelist + item-standard validation**: Rejects orders containing non-whitelisted ERC-20 tokens at registration and fulfillment. OTCRegistry also enforces declared item shape: all registered items must have fixed amounts (`startAmount == endAmount`) and `conduitKey == bytes32(0)`; all consideration recipients must equal the maker; ERC-20 items must have `identifier == 0`; ERC-721 items must support ERC-165 `IERC721` and have amount `1`; ERC-1155 items must support ERC-165 `IERC1155`; native items must use `token == address(0)` and `identifier == 0`. These checks block ordinary mislabeling and malformed orders, but ERC-165 is self-attested by the token contract and is not an authenticity guarantee for arbitrary malicious NFTs. Whitelist is set at deployment (immutable — no admin can modify it). Whitelists per chain: Ethereum (WETH, USDC, USDT, USDS, EURC), Base (WETH, USDC, USDS, EURC), Polygon (WETH, USDC, USDT0), Ink (WETH, USDC, USDT0).
-3. **Order registry**: `registerOrder` publishes signed orders for discovery. It accepts `OrderComponents` (the full Seaport order parameters) and a `seaportSignature`, plus an optional `memo` (max 280 bytes) and an OTCRegistry `signature`. The contract calls `ISeaport(seaport).getOrderHash(components)` to derive the canonical order hash — no EIP-712 reimplementation. It asserts `components.zone == address(this)` and `components.orderType == FULL_RESTRICTED` before proceeding, so the emitted event is trustworthy by construction for all consumers without client-side cross-checks. The expiry check uses `components.endTime` directly; there is no separate `deadline` field. The maker's EIP-712 registration signature covers `(orderHash, keccak(seaportSignature), keccak(memo))` under OTCRegistry's domain: `orderHash` transitively binds all order fields (offerer, taker via zoneHash, endTime, etc.), and binding `seaportSignature` prevents a front-runner from substituting a bad Seaport sig using a stolen registration sig. Solady's `SignatureCheckerLib` supports EOA signatures (both standard 65-byte and EIP-2098 compact 64-byte) and EIP-1271 contract wallet signatures. Submission is permissionless — `msg.sender` is unchecked — which supports proxy wallets, gas sponsors, and mini-app relayers submitting on the maker's behalf. A `registered[orderHash][maker]` mapping blocks replay without enabling front-run squatting: the same `(orderHash, maker)` pair can only land once, but a would-be squatter can't block the legitimate maker's slot by registering under their own key. The `registered` slot is written before the signature check (CEI ordering) as defense-in-depth against any future ERC-1271 callback that isn't a staticcall. An expired order reverts before the slot is written, so a maker can create a fresh Seaport order (new `endTime` → new `orderHash`) and publish.
+2. **ERC-20 whitelist + item-standard validation**: Rejects orders containing non-whitelisted ERC-20 tokens at registration and fulfillment. OTCRegistry also enforces declared item shape at registration: all registered items must have fixed, nonzero amounts (`startAmount == endAmount` and `startAmount > 0`) and `conduitKey == bytes32(0)`; `startTime <= endTime`; all consideration recipients must equal the maker; ERC-20 items must have `identifier == 0`; ERC-721 items must support ERC-165 `IERC721` and have amount `1`; ERC-1155 items must support ERC-165 `IERC1155`; native items must use `token == address(0)` and `identifier == 0`; native items are allowed only on the consideration side, because Seaport fulfillment supplies native ETH from the caller via `msg.value` and cannot transfer native ETH from the maker's offer side. These checks block ordinary mislabeling and malformed orders, but ERC-165 is self-attested by the token contract and is not an authenticity guarantee for arbitrary malicious NFTs. Whitelist is set at deployment (immutable — no admin can modify it). Whitelists per chain: Ethereum (WETH, USDC, USDT, USDS, EURC), Base (WETH, USDC, USDS, EURC), Polygon (WETH, USDC, USDT0), Ink (WETH, USDC, USDT0).
+3. **Order registry**: `registerOrder` publishes signed orders for discovery and is mandatory for settlement through OTCRegistry. It accepts `OrderComponents` (the full Seaport order parameters) and a `seaportSignature`, plus an optional `memo` (max 280 bytes) and an OTCRegistry `signature`. The contract requires `components.counter` to equal Seaport's current counter for the offerer, then calls `ISeaport(seaport).getOrderHash(components)` to derive the canonical order hash — no EIP-712 reimplementation. It asserts `components.zone == address(this)` and `components.orderType == FULL_RESTRICTED` before proceeding, so the emitted event is trustworthy by construction for all consumers without client-side cross-checks. The expiry check uses `components.endTime` directly; there is no separate `deadline` field. The maker's EIP-712 registration signature covers `(orderHash, keccak(seaportSignature), keccak(memo))` under OTCRegistry's domain: `orderHash` transitively binds all order fields (offerer, taker via zoneHash, endTime, etc.), and binding `seaportSignature` prevents a front-runner from substituting a bad Seaport sig using a stolen registration sig. The contract then calls `Seaport.validate()` before emitting. In the normal path this verifies the Seaport signature and marks the order hash validated in Seaport storage; if the same order hash was already validated directly in Seaport, Seaport may skip re-verifying the supplied signature bytes. That does not let an attacker substitute event data, because the maker's registry signature still binds `keccak(seaportSignature)`, but offchain consumers should treat the validated order hash and registry signature as the publication proof, not the emitted Seaport signature bytes alone. Solady's `SignatureCheckerLib` supports EOA signatures (both standard 65-byte and EIP-2098 compact 64-byte) and EIP-1271 contract wallet signatures. Submission is permissionless — `msg.sender` is unchecked — which supports proxy wallets, gas sponsors, and mini-app relayers submitting on the maker's behalf. A `registered[orderHash][maker]` mapping blocks replay without enabling front-run squatting and is checked during fulfillment: the same `(orderHash, maker)` pair can only land once, a would-be squatter can't block the legitimate maker's slot by registering under their own key, and unregistered Seaport orders cannot settle through OTCRegistry. The `registered` slot is written before the signature check (CEI ordering) as defense-in-depth against any future ERC-1271 callback that isn't a staticcall and so Seaport's validation path can observe the registered order if it invokes the zone. An expired order reverts before the slot is written, so a maker can create a fresh Seaport order (new `endTime` → new `orderHash`) and publish.
 
 ```solidity
 struct OrderRegistration {
@@ -125,10 +127,10 @@ struct OrderRegistration {
 
 ERC-20 enforcement happens at three layers:
 - **Frontend**: The Create page only offers whitelisted ERC-20s for the connected chain.
-- **Registration**: `registerOrder` rejects orders containing non-whitelisted ERC-20s before emitting, keeping the registry free of unfillable entries. It also rejects variable-amount items (`startAmount != endAmount`) so registered Ocarina offers are fixed swaps, and checks that ERC-721/ERC-1155 items support the declared ERC-165 interface, which catches ordinary ERC-20-as-NFT mislabeling and malformed item declarations. A malicious token contract can still self-report ERC-165 support, so arbitrary NFT authenticity is handled by frontend verification indicators and warnings rather than by the registry alone.
-- **Fulfillment**: `validateOrder` applies the same whitelist and item-standard checks if Seaport tries to settle an order through the zone. Because Seaport reverts atomically on callback failure, no funds can move for a rejected token.
+- **Registration**: `registerOrder` rejects orders containing non-whitelisted ERC-20s before emitting, keeping the registry free of unfillable entries. It also rejects variable-amount items (`startAmount != endAmount`), zero-amount items, maker-side native items, and orders where `startTime > endTime`, so registered Ocarina offers are fixed, nonzero swaps within a valid time range. It checks that ERC-721/ERC-1155 items support the declared ERC-165 interface, which catches ordinary ERC-20-as-NFT mislabeling and malformed item declarations. A malicious token contract can still self-report ERC-165 support, so arbitrary NFT authenticity is handled by frontend verification indicators and warnings rather than by the registry alone.
+- **Fulfillment**: `validateOrder` requires the `(orderHash, offerer)` pair to have been registered and rechecks ERC-20 whitelist status for any ERC-20 items Seaport presents during settlement. Because Seaport reverts atomically on callback failure, no funds can move for an unregistered order or rejected token.
 
-`OrderRegistered` emits `OrderComponents` and `seaportSignature` as structured ABI-encoded fields; the frontend reconstructs the full order object directly from these fields. The `memo` field is emitted in the `OrderRegistered` event and displayed on the trade detail page when present (not on offer cards, to keep the browse layout clean).
+`OrderRegistered` emits `OrderComponents` and `seaportSignature` as structured ABI-encoded fields; the frontend reconstructs the full order object directly from these fields. The Seaport signature is emitted for compatibility with standard Seaport order tooling and seaport-js fulfillment payloads. Because `registerOrder` pre-validates the order hash in Seaport, the signature bytes are not the sole authorization source after registration; the canonical authorization is the validated Seaport order hash plus the maker's OTCRegistry publication signature over the emitted fields. The `memo` field is emitted in the `OrderRegistered` event and displayed on the trade detail page when present (not on offer cards, to keep the browse layout clean).
 
 **Note:** Seaport also allows the offerer to cancel by incrementing their counter (bulk cancel) or cancelling specific orders onchain.
 
@@ -307,8 +309,9 @@ Key points:
 - Full contract addresses always visible, linked to Etherscan
 - Verification modal on trade acceptance: when a user clicks "Accept Trade", NFTs the taker is receiving (maker's offer items) are checked for verification status. If any are unverified, a modal lists them with OpenSea links and requires explicit confirmation ("Accept Anyway") before proceeding. Verified-only trades proceed directly.
 - Inline unverified warning on offer creation: the review step shows a yellow warning box on any unverified NFT, linking to OpenSea for verification before signing.
-- ERC-20 whitelist enforced at three layers (frontend, registration, fulfillment), with onchain item-shape checks and ERC-165 checks for declared NFT items. These checks block ordinary ERC-20-as-NFT mislabeling and malformed orders, but they do not prove that an arbitrary unverified token contract is honest.
-- **Trustworthy event log by construction.** `registerOrder` verifies all critical invariants onchain before emitting: `zone == address(this)` and `orderType == FULL_RESTRICTED` are asserted directly; `orderHash` is derived by delegating to `ISeaport(seaport).getOrderHash(components)` rather than re-implementing EIP-712 (no divergence possible); `taker` is extracted from the low 20 bytes of `zoneHash` by the contract. The maker's EIP-712 registration signature covers `(orderHash, seaportSignature, memo)` — `orderHash` transitively binds all `OrderComponents` fields, and `seaportSignature` is bound directly to prevent a front-runner from substituting a bad Seaport signature using the maker's registration sig. `verifyAndExtract` in `src/lib/contract.js` is a reconstruction step only — it converts the raw ethers Result into seaport-js format — not a trust gatekeeper. Events are deduped by `orderHash` (earliest-wins), which combined with the contract's `registered[orderHash][maker]` slot makes replay-overwrite spoofing impossible.
+- ERC-20 whitelist enforced at three layers (frontend, registration, fulfillment), with registration-time item-shape checks and ERC-165 checks for declared NFT items. These checks block ordinary ERC-20-as-NFT mislabeling and malformed orders, but they do not prove that an arbitrary unverified token contract is honest.
+- **Trustworthy event log by construction.** `registerOrder` verifies all critical invariants onchain before emitting: `zone == address(this)` and `orderType == FULL_RESTRICTED` are asserted directly; `orderHash` is derived by delegating to `ISeaport(seaport).getOrderHash(components)` rather than re-implementing EIP-712 (no divergence possible); `taker` is extracted from the low 20 bytes of `zoneHash` by the contract. The maker's EIP-712 registration signature covers `(orderHash, seaportSignature, memo)` — `orderHash` transitively binds all `OrderComponents` fields, and `seaportSignature` is bound directly to prevent a front-runner from substituting a bad Seaport signature using the maker's registration sig. If the order hash was already validated in Seaport before registration, Seaport may not re-check the emitted signature bytes during `registerOrder`; this is acceptable because fulfillment relies on Seaport's validated order hash, and publication relies on the maker's OTCRegistry signature binding the emitted bytes. `verifyAndExtract` in `src/lib/contract.js` is a reconstruction step only — it converts the raw ethers Result into seaport-js format — not a trust gatekeeper. Events are deduped by `orderHash` (earliest-wins), and `validateOrder` rejects any `(orderHash, maker)` pair not present in `registered`, so replay-overwrite spoofing is impossible and unregistered direct Seaport orders cannot settle through OTCRegistry.
+- **Registration-gated settlement.** OTCRegistry is not a general-purpose Seaport policy zone. Direct Seaport orders can name the OTCRegistry as their zone, but they are unfillable unless the exact order was published through `registerOrder` first.
 
 ### Spam NFT Detection
 
@@ -381,7 +384,7 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 
 1. Counterparty opens the shared link
 2. UI fetches `OrderRegistered` event from the registration tx receipt and extracts the signed order
-3. UI validates: checks Seaport for order status, checks expiration, verifies signature
+3. UI validates: checks Seaport for order status, checks expiration, and reconstructs the Seaport order from the registry event. The order hash's Seaport validation status plus the registry event are the trust anchors; the emitted signature is retained for seaport-js payload compatibility.
 4. UI displays all assets with verification indicators
 5. UI checks onchain holdings for both maker (offer) and taker (consideration), flagging any missing assets
 6. Counterparty reviews the trade
@@ -537,7 +540,7 @@ Alchemy-specific config lives in `src/lib/metadata.js` and `src/components/creat
 - **@vitejs/plugin-react**: JSX transform
 - **foundry** (forge): OTCRegistry contract development and testing
 
-The only custom contract is the OTCRegistry (~175 lines), deployed once per chain. Foundry is needed only for this contract.
+The only custom contract is OTCRegistry, deployed once per chain. Foundry is needed only for this contract.
 
 ---
 

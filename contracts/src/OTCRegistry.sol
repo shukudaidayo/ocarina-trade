@@ -27,8 +27,8 @@ struct OrderRegistration {
 contract OTCRegistry is ZoneInterface, EIP712 {
     address[] private whitelistedTokens;
     mapping(address => bool) public whitelistedERC20;
-    // Keyed by (orderHash, maker) so a front-runner cannot permanently brick a
-    // victim's orderHash by squatting the slot with a self-signed registration.
+    // Keyed by (orderHash, maker). Used both to block duplicate publication and
+    // as the settlement allowlist checked by validateOrder.
     mapping(bytes32 => mapping(address => bool)) public registered;
     address public immutable seaport;
 
@@ -58,6 +58,11 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     error VariableAmount(uint256 startAmount, uint256 endAmount);
     error InvalidTokenStandard(address token, bytes4 interfaceId);
     error SeaportValidationFailed();
+    error InvalidTime(uint256 startTime, uint256 endTime);
+    error InvalidNativeOfferItem();
+    error MissingItemAmount();
+    error InvalidCounter(uint256 providedCounter, uint256 currentCounter);
+    error OrderNotRegistered();
 
     event OrderRegistered(
         bytes32 indexed orderHash,
@@ -95,19 +100,29 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     ///
     /// Accepts the full Seaport OrderComponents and delegates hash derivation to
     /// the Seaport contract via SeaportInterface.getOrderHash — no EIP-712 reimplementation.
-    /// Asserts zone == address(this) and orderType == FULL_RESTRICTED onchain, so
-    /// the event log is trustworthy without client-side cross-checks. The maker's
-    /// EIP-712 registration signature covers (orderHash, seaportSignature, memo),
-    /// binding the Seaport signature to the publication and preventing a front-runner
-    /// from substituting a bad seaportSignature using the maker's registration sig.
+    /// Requires the order's counter to match Seaport's live counter and asserts
+    /// zone == address(this) and orderType == FULL_RESTRICTED onchain, so the event
+    /// log is trustworthy without client-side cross-checks. A successful registration
+    /// is required for fulfillment through validateOrder. The maker's EIP-712
+    /// registration signature covers (orderHash, seaportSignature, memo), binding
+    /// the Seaport signature to the publication and preventing a front-runner from
+    /// substituting a bad seaportSignature using the maker's registration sig.
     function registerOrder(OrderRegistration calldata reg) external {
         if (bytes(reg.memo).length > MAX_MEMO_LENGTH) revert MemoTooLong();
+        if (reg.components.startTime > reg.components.endTime) {
+            revert InvalidTime(reg.components.startTime, reg.components.endTime);
+        }
         if (block.timestamp > reg.components.endTime) revert Expired();
         if (reg.components.zone != address(this)) revert WrongZone();
         if (reg.components.orderType != OrderType.FULL_RESTRICTED) revert WrongOrderType();
         if (reg.components.conduitKey != bytes32(0)) revert InvalidConduitKey();
+        uint256 currentCounter = SeaportInterface(seaport).getCounter(reg.components.offerer);
+        if (reg.components.counter != currentCounter) {
+            revert InvalidCounter(reg.components.counter, currentCounter);
+        }
 
         for (uint256 i = 0; i < reg.components.offer.length; i++) {
+            if (reg.components.offer[i].itemType == ItemType.NATIVE) revert InvalidNativeOfferItem();
             _checkFixedAmount(reg.components.offer[i].startAmount, reg.components.offer[i].endAmount);
             _checkItem(
                 reg.components.offer[i].itemType,
@@ -118,9 +133,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         }
         for (uint256 i = 0; i < reg.components.consideration.length; i++) {
             _checkRecipient(reg.components.consideration[i].recipient, reg.components.offerer);
-            _checkFixedAmount(
-                reg.components.consideration[i].startAmount, reg.components.consideration[i].endAmount
-            );
+            _checkFixedAmount(reg.components.consideration[i].startAmount, reg.components.consideration[i].endAmount);
             _checkItem(
                 reg.components.consideration[i].itemType,
                 reg.components.consideration[i].token,
@@ -149,8 +162,10 @@ contract OTCRegistry is ZoneInterface, EIP712 {
 
         // Validate the Seaport signature via Seaport itself. This prevents publishing
         // an unfillable offer and — as a side effect — marks the order pre-validated in
-        // Seaport's storage, reducing taker gas at fill time (Seaport skips sig
-        // re-verification for pre-validated orders).
+        // Seaport's storage, reducing taker gas at fill time. If this order hash was
+        // already validated directly in Seaport, Seaport may skip re-checking the
+        // signature bytes supplied here; the registry signature still binds those bytes
+        // for event consumers, while Seaport's validated order hash authorizes fill.
         Order[] memory orders = new Order[](1);
         orders[0] = Order({
             parameters: OrderParameters({
@@ -186,27 +201,17 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         return this.authorizeOrder.selector;
     }
 
-    /// @notice Called by Seaport after token transfers. Enforces item shape and recipients.
+    /// @notice Called by Seaport after token transfers. Enforces prior registration and ERC-20 policy.
     function validateOrder(ZoneParameters calldata zoneParameters) external view returns (bytes4) {
         if (msg.sender != seaport) revert Unauthorized();
+        if (!registered[zoneParameters.orderHash][zoneParameters.offerer]) revert OrderNotRegistered();
 
         for (uint256 i = 0; i < zoneParameters.offer.length; i++) {
-            _checkItem(
-                zoneParameters.offer[i].itemType,
-                zoneParameters.offer[i].token,
-                zoneParameters.offer[i].identifier,
-                zoneParameters.offer[i].amount
-            );
+            _checkERC20Whitelist(zoneParameters.offer[i].itemType, zoneParameters.offer[i].token);
         }
 
         for (uint256 i = 0; i < zoneParameters.consideration.length; i++) {
-            _checkRecipient(zoneParameters.consideration[i].recipient, zoneParameters.offerer);
-            _checkItem(
-                zoneParameters.consideration[i].itemType,
-                zoneParameters.consideration[i].token,
-                zoneParameters.consideration[i].identifier,
-                zoneParameters.consideration[i].amount
-            );
+            _checkERC20Whitelist(zoneParameters.consideration[i].itemType, zoneParameters.consideration[i].token);
         }
 
         return this.validateOrder.selector;
@@ -225,6 +230,10 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         if (!whitelistedERC20[token]) revert TokenNotWhitelisted(token);
     }
 
+    function _checkERC20Whitelist(ItemType itemType, address token) internal view {
+        if (itemType == ItemType.ERC20) _checkWhitelist(token);
+    }
+
     function _checkFixedAmount(uint256 startAmount, uint256 endAmount) internal pure {
         if (startAmount != endAmount) revert VariableAmount(startAmount, endAmount);
     }
@@ -234,6 +243,8 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     }
 
     function _checkItem(ItemType itemType, address token, uint256 identifier, uint256 amount) internal view {
+        if (amount == 0) revert MissingItemAmount();
+
         if (itemType == ItemType.NATIVE) {
             if (token != address(0) || identifier != 0) revert InvalidNativeItem();
             return;
@@ -245,20 +256,13 @@ contract OTCRegistry is ZoneInterface, EIP712 {
             return;
         }
 
-        _checkItemAmount(itemType, amount);
-
         if (itemType == ItemType.ERC721 || itemType == ItemType.ERC721_WITH_CRITERIA) {
+            if (amount != 1) revert InvalidERC721Amount(amount);
             _checkSupportsInterface(token, 0x80ac58cd);
         } else if (itemType == ItemType.ERC1155 || itemType == ItemType.ERC1155_WITH_CRITERIA) {
             _checkSupportsInterface(token, 0xd9b67a26);
         } else {
             revert InvalidItemType(itemType);
-        }
-    }
-
-    function _checkItemAmount(ItemType itemType, uint256 amount) internal pure {
-        if ((itemType == ItemType.ERC721 || itemType == ItemType.ERC721_WITH_CRITERIA) && amount != 1) {
-            revert InvalidERC721Amount(amount);
         }
     }
 

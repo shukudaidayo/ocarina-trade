@@ -27,18 +27,26 @@ sequenceDiagram
     F->>W: registerOrder(reg)
     W->>Z: registerOrder tx (submitter can be maker or a relayer)
     Z->>Z: Check memo length ≤ 280
-    Z->>Z: Check !expired (endTime)
+    Z->>Z: Check startTime <= endTime and !expired (endTime)
     Z->>Z: Assert zone == address(this)
     Z->>Z: Assert orderType == FULL_RESTRICTED
+    Z->>Z: Assert conduitKey == bytes32(0)
+    Z->>S: getCounter(offerer)
+    S-->>Z: Current maker counter
+    Z->>Z: Require components.counter == current counter
+    Z->>Z: Validate item shape, recipients, native side, and ERC-20 whitelist
     Z->>Z: orderHash = ISeaport.getOrderHash(components) (delegates to Seaport)
-    Z->>Z: Check !registered[orderHash][maker] (replay guard, squat-resistant)
+    Z->>Z: Check !registered[orderHash][maker]
+    Note over Z: registered is both duplicate-publication guard<br/>and settlement allowlist
     Z->>Z: registered[orderHash][maker] = true (CEI before signature check)
     Z->>Z: Verify registration signature (ECDSA or EIP-1271) against OTCRegistry domain
+    Z->>S: validate([{ parameters, seaportSignature }])
+    S-->>Z: true or revert
     Z->>Z: taker = address(uint160(zoneHash))
     Z->>Z: emit OrderRegistered(orderHash, maker, taker, components, seaportSignature, memo)
     Z-->>F: Tx receipt
 
-    F->>F: Navigate to #/offer/{chainId}/{txHash}
+    F->>F: Navigate to /offer/{chainId}/{txHash}
 ```
 
 ## View Trade (Load from URL)
@@ -58,7 +66,11 @@ sequenceDiagram
     F->>S: getOrderStatus(orderHash)
     S-->>F: { isCancelled, totalFilled, totalSize }
 
+    F->>S: getCounter(offerer)
+    S-->>F: Current maker counter
+
     F->>F: Derive status (open / filled / cancelled / expired)
+    Note over F: Counter > order.counter means bulk-cancelled
     F->>F: Display trade details
 ```
 
@@ -89,7 +101,8 @@ sequenceDiagram
 
     S->>Z: validateOrder(zoneParameters)
     Z->>Z: Require msg.sender == seaport
-    Z->>Z: Check ERC-20 whitelist
+    Z->>Z: Require registered[orderHash][offerer]
+    Z->>Z: Recheck ERC-20 whitelist
     Z-->>S: selector (valid)
 
     S->>S: emit OrderFulfilled(orderHash, ...)
@@ -133,7 +146,13 @@ sequenceDiagram
         S-->>F: { isCancelled, totalFilled, totalSize }
     end
 
+    loop For each unique maker
+        F->>S: getCounter(maker)
+        S-->>F: Current maker counter
+    end
+
     F->>F: Derive status per order
-    F->>F: Filter by tab (mine / open / filled)
+    Note over F: Exclude filled, cancelled, expired,<br/>and counter-invalidated orders from Open
+    F->>F: Filter by status tab (Open / All)
     F->>F: Display offer cards
 ```
