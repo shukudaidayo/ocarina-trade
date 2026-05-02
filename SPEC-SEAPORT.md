@@ -71,7 +71,7 @@ OfferItem / ConsiderationItem {
   token           // Contract address
   identifierOrCriteria  // Token ID (or merkle root for criteria-based)
   startAmount     // Amount (1 for ERC-721)
-  endAmount       // Amount (can differ from start for dutch auctions; same for fixed)
+  endAmount       // Final amount; Ocarina V1 requires this to equal startAmount
 }
 ```
 
@@ -81,11 +81,12 @@ For a simple NFT-for-NFT trade:
 
 1. **Maker creates an order:**
    - `offer`: The NFTs/tokens the maker is giving
-   - `consideration`: The NFTs/tokens the maker wants, with `recipient` set to the maker's address
+   - `consideration`: The NFTs/tokens the maker wants, with every `recipient` set to the maker's address
    - `orderType`: `FULL_RESTRICTED` (2) — always restricted, so the OTCRegistry validates every order (ERC-20 whitelist + optional taker restriction)
+   - `startAmount == endAmount` for every item — fixed swaps only; variable-price/dutch-style orders are rejected by OTCRegistry
    - `startTime`: now
    - `endTime`: expiration timestamp
-   - `conduitKey`: `bytes32(0)` (use Seaport directly for transfers)
+   - `conduitKey`: `bytes32(0)` — use Seaport directly for transfers; nonzero conduit keys are rejected by OTCRegistry
 
 2. **Maker signs the order** using EIP-712 typed data signing (no gas).
 
@@ -110,7 +111,7 @@ The contract implements Seaport 1.6's `ZoneInterface` (from `seaport-types`). It
 
 It serves three purposes:
 1. **Taker validation**: `authorizeOrder` (pre-transfer) checks that the fulfiller matches the allowed taker encoded in the lower 20 bytes of `zoneHash` (the Seaport order's zoneHash, not a registration field). Upper 96 bits are reserved for future use and ignored here.
-2. **ERC-20 whitelist**: Rejects orders containing non-whitelisted ERC-20 tokens at fulfillment via `validateOrder`. Whitelist is set at deployment (immutable — no admin can modify it). Whitelists per chain: Ethereum (WETH, USDC, USDT, USDS, EURC), Base (WETH, USDC, USDS, EURC), Polygon (WETH, USDC, USDT0), Ink (WETH, USDC, USDT0).
+2. **ERC-20 whitelist + item-standard validation**: Rejects orders containing non-whitelisted ERC-20 tokens at registration and fulfillment. OTCRegistry also enforces declared item shape: all registered items must have fixed amounts (`startAmount == endAmount`) and `conduitKey == bytes32(0)`; all consideration recipients must equal the maker; ERC-20 items must have `identifier == 0`; ERC-721 items must support ERC-165 `IERC721` and have amount `1`; ERC-1155 items must support ERC-165 `IERC1155`; native items must use `token == address(0)` and `identifier == 0`. These checks block ordinary mislabeling and malformed orders, but ERC-165 is self-attested by the token contract and is not an authenticity guarantee for arbitrary malicious NFTs. Whitelist is set at deployment (immutable — no admin can modify it). Whitelists per chain: Ethereum (WETH, USDC, USDT, USDS, EURC), Base (WETH, USDC, USDS, EURC), Polygon (WETH, USDC, USDT0), Ink (WETH, USDC, USDT0).
 3. **Order registry**: `registerOrder` publishes signed orders for discovery. It accepts `OrderComponents` (the full Seaport order parameters) and a `seaportSignature`, plus an optional `memo` (max 280 bytes) and an OTCRegistry `signature`. The contract calls `ISeaport(seaport).getOrderHash(components)` to derive the canonical order hash — no EIP-712 reimplementation. It asserts `components.zone == address(this)` and `components.orderType == FULL_RESTRICTED` before proceeding, so the emitted event is trustworthy by construction for all consumers without client-side cross-checks. The expiry check uses `components.endTime` directly; there is no separate `deadline` field. The maker's EIP-712 registration signature covers `(orderHash, keccak(seaportSignature), keccak(memo))` under OTCRegistry's domain: `orderHash` transitively binds all order fields (offerer, taker via zoneHash, endTime, etc.), and binding `seaportSignature` prevents a front-runner from substituting a bad Seaport sig using a stolen registration sig. Solady's `SignatureCheckerLib` supports EOA signatures (both standard 65-byte and EIP-2098 compact 64-byte) and EIP-1271 contract wallet signatures. Submission is permissionless — `msg.sender` is unchecked — which supports proxy wallets, gas sponsors, and mini-app relayers submitting on the maker's behalf. A `registered[orderHash][maker]` mapping blocks replay without enabling front-run squatting: the same `(orderHash, maker)` pair can only land once, but a would-be squatter can't block the legitimate maker's slot by registering under their own key. The `registered` slot is written before the signature check (CEI ordering) as defense-in-depth against any future ERC-1271 callback that isn't a staticcall. An expired order reverts before the slot is written, so a maker can create a fresh Seaport order (new `endTime` → new `orderHash`) and publish.
 
 ```solidity
@@ -122,9 +123,10 @@ struct OrderRegistration {
 }
 ```
 
-ERC-20 enforcement happens at two layers:
+ERC-20 enforcement happens at three layers:
 - **Frontend**: The Create page only offers whitelisted ERC-20s for the connected chain.
-- **Fulfillment**: `validateOrder` reverts if Seaport tries to settle an order with a non-whitelisted ERC-20. Because Seaport reverts atomically on callback failure, no funds can move for a rejected token.
+- **Registration**: `registerOrder` rejects orders containing non-whitelisted ERC-20s before emitting, keeping the registry free of unfillable entries. It also rejects variable-amount items (`startAmount != endAmount`) so registered Ocarina offers are fixed swaps, and checks that ERC-721/ERC-1155 items support the declared ERC-165 interface, which catches ordinary ERC-20-as-NFT mislabeling and malformed item declarations. A malicious token contract can still self-report ERC-165 support, so arbitrary NFT authenticity is handled by frontend verification indicators and warnings rather than by the registry alone.
+- **Fulfillment**: `validateOrder` applies the same whitelist and item-standard checks if Seaport tries to settle an order through the zone. Because Seaport reverts atomically on callback failure, no funds can move for a rejected token.
 
 `OrderRegistered` emits `OrderComponents` and `seaportSignature` as structured ABI-encoded fields; the frontend reconstructs the full order object directly from these fields. The `memo` field is emitted in the `OrderRegistered` event and displayed on the trade detail page when present (not on offer cards, to keep the browse layout clean).
 
@@ -181,12 +183,12 @@ Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
 
 3. **`/offer/{chainId}/{txHash}`** - View and accept an offer
    - Fetch `OrderRegistered` event from the registration tx receipt
-   - Extract signed order from `orderURI` field
+   - Reconstruct the signed order from the emitted `OrderComponents` and `seaportSignature`
    - Display both sides with large NFT images, small logos for cash assets, OpenSea/Uniswap links
    - Layout: "From [address/ENS]" headers for each side ("From Anyone" for open taker)
    - Display memo (if present) in the offer metadata section
    - Expiration shown only for open offers; hidden for filled/cancelled/expired
-   - For filled offers, show a "Fill tx" link to the block explorer transaction that settled the offer. Found by querying the Blockscout logs API for Seaport `OrderFulfilled` events (topic0: `0x9d9af8e38d66c62e2c12f0225249fd9d721c54b83f48d9352c97c6cacdcb6f31`) filtered by the offerer address (topic1) and zone address (topic3), then matching the orderHash in the decoded event data.
+   - For filled offers, show a "Fill tx" link to the block explorer transaction that settled the offer. Found by querying the Blockscout logs API for Seaport `OrderFulfilled` events (topic0: `0x9d9af8e38d66c62e2c12f0225249fd9d721c54b83f48d9352c97c6cacdcb6f31`) filtered by the offerer address (topic1) and zone address (topic2), then matching the orderHash in the decoded event data.
    - Validate order onchain via Seaport `getOrderStatus` (check if filled/cancelled)
    - If valid and user is eligible: "Accept Offer" button triggers a verification modal listing any unverified NFTs the taker is receiving (maker's offer items) before proceeding, with OpenSea links for review. If all received assets are verified, proceeds directly.
    - If user is maker: "Cancel Offer" button
@@ -233,7 +235,7 @@ Events are cross-referenced with Seaport's `getOrderStatus` to determine which o
 - **Open** (default): All `OrderRegistered` events, filtered client-side to exclude filled/cancelled/expired orders. Sorted by validity (valid offers first), then by soonest expiration. Paginated.
 - **All**: All `OrderRegistered` events regardless of status. Sorted by creation time (newest first).
 
-Each `OrderRegistered` event contains the `orderURI`, which has everything needed to reconstruct the trade page link.
+Each `OrderRegistered` event contains structured `OrderComponents` and the `seaportSignature`, which has everything needed to reconstruct the trade page link and fulfillment payload.
 
 ---
 
@@ -290,7 +292,7 @@ const { isCancelled, totalFilled, totalSize } = await seaport.getOrderStatus(ord
 - `isCancelled` → cancelled
 - Neither → still open (check `endTime` client-side for expiration)
 
-**Known gap — counter-invalidated orders:** `incrementCounter()` bulk-cancels all of a maker's orders by advancing their counter, but these orders return `isCancelled=false, totalFilled=0` from `getOrderStatus` — they appear open in the UI even though fulfillment would revert. Detection requires a separate `seaport.getCounter(maker)` call and comparing to `order.components.counter`; if the current counter is higher, the order is dead. Not currently implemented. If bulk cancel is ever added to the UI, add this check to the status resolution logic in `deriveOrderStatus` (`src/lib/contract.js`).
+**Counter-invalidated orders:** `incrementCounter()` bulk-cancels all of a maker's orders by advancing their counter, but these orders return `isCancelled=false, totalFilled=0` from `getOrderStatus`. Detection is handled by a separate `seaport.getCounter(maker)` call in `deriveOrderStatus` (`src/lib/contract.js`): if the live counter exceeds `order.parameters.counter`, the order is treated as cancelled. On the offers page, counters are pre-fetched per unique maker (deduplicated) before the status batch. On the offer detail page, `getCounter` is fetched in parallel with `getOrderStatus` and degrades gracefully on RPC failure.
 
 ---
 
@@ -305,7 +307,7 @@ Key points:
 - Full contract addresses always visible, linked to Etherscan
 - Verification modal on trade acceptance: when a user clicks "Accept Trade", NFTs the taker is receiving (maker's offer items) are checked for verification status. If any are unverified, a modal lists them with OpenSea links and requires explicit confirmation ("Accept Anyway") before proceeding. Verified-only trades proceed directly.
 - Inline unverified warning on offer creation: the review step shows a yellow warning box on any unverified NFT, linking to OpenSea for verification before signing.
-- ERC-20 whitelist enforced at three layers (frontend, registration, fulfillment) — prevents impostor token scams
+- ERC-20 whitelist enforced at three layers (frontend, registration, fulfillment), with onchain item-shape checks and ERC-165 checks for declared NFT items. These checks block ordinary ERC-20-as-NFT mislabeling and malformed orders, but they do not prove that an arbitrary unverified token contract is honest.
 - **Trustworthy event log by construction.** `registerOrder` verifies all critical invariants onchain before emitting: `zone == address(this)` and `orderType == FULL_RESTRICTED` are asserted directly; `orderHash` is derived by delegating to `ISeaport(seaport).getOrderHash(components)` rather than re-implementing EIP-712 (no divergence possible); `taker` is extracted from the low 20 bytes of `zoneHash` by the contract. The maker's EIP-712 registration signature covers `(orderHash, seaportSignature, memo)` — `orderHash` transitively binds all `OrderComponents` fields, and `seaportSignature` is bound directly to prevent a front-runner from substituting a bad Seaport signature using the maker's registration sig. `verifyAndExtract` in `src/lib/contract.js` is a reconstruction step only — it converts the raw ethers Result into seaport-js format — not a trust gatekeeper. Events are deduped by `orderHash` (earliest-wins), which combined with the contract's `registered[orderHash][maker]` slot makes replay-overwrite spoofing impossible.
 
 ### Spam NFT Detection
@@ -370,7 +372,7 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 7. Clicks "Confirm" → execute screen walks through steps:
    a. Approval steps — one per unique token contract (gas, per collection)
    b. Sign Seaport order — EIP-712 signature authorizing settlement (**no gas**)
-   c. Sign OTCRegistry registration — EIP-712 signature binding every event field (taker, deadline, orderURI, memo) plus orderHash to the maker (**no gas**). Deadline is pinned to the order's endTime so the publish signature expires alongside the order. Separate from (b) because the Seaport signature authorizes fund transfer; this one authorizes the public listing and is what sponsored-gas relayers submit.
+   c. Sign OTCRegistry registration — EIP-712 signature binding the Seaport-derived `orderHash`, `seaportSignature`, and memo to the maker (**no gas**). The registration expires with the Seaport order's `endTime`. Separate from (b) because the Seaport signature authorizes fund transfer; this one authorizes the public listing and is what sponsored-gas relayers submit.
    d. Register order — `registerOrder` on OTCRegistry (gas, cheap)
 8. Success screen shows shareable link
 9. User copies link and sends to counterparty
@@ -410,215 +412,12 @@ All contracts deployed via CREATE2 (Nick's Factory at `0x4e59b44847b379578588920
 | Polygon | `0x07C000000b63fEe6aC08B91ad7aD3d999b28d740` | WETH, USDC, USDT0 |
 | Ink | `0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52` | WETH, USDC, USDT0 |
 
+Historical audit findings, dispositions, and redeploy notes are tracked in
+`AUDIT-HISTORY.md`. This spec describes the current intended system only.
+
 ---
 
 ## 9. Future Roadmap
-
-### OTCRegistry Contract Upgrades (Post-Audit)
-
-Status of the six findings from the 2026-04-15 Pashov AI security review
-(`ocarina-trade-pashov-ai-audit-report-20260415-184837.md`). None of them put
-funds at risk — Seaport always enforces the true signed order parameters at
-settlement — but findings 1 and 2 together enabled phishing via forged event
-metadata attributed to a real maker's address.
-
-**Finding 1 — `registerOrder` signature only binds `orderHash` — RESOLVED.** The
-contract computes an EIP-712 digest over the registration struct (`orderHash`,
-`maker`, `taker`, `orderURI`, `memo`) under OTCRegistry's own domain separator
-(`name: "OTCRegistry"`, `version: "1"`). Every emitted event field is signed.
-Relayer support is preserved: `msg.sender` is still unchecked, so sponsored-gas
-submitters (Base App mini-app paymasters, proxy wallets) can land the tx on the
-maker's behalf. The order creation flow now produces two EIP-712 signatures —
-one for Seaport settlement, one for the OTCRegistry registration — both gasless.
-
-**Finding 2 — No registration replay guard — RESOLVED.** `mapping(bytes32 => bool) public registered`
-is set on first registration; subsequent submissions with the same `orderHash`
-revert `AlreadyRegistered`.
-
-**Finding 3 — Zone callbacks publicly callable — RESOLVED.** `authorizeOrder`
-and `validateOrder` now revert `Unauthorized` when `msg.sender != seaport`.
-
-**Finding 4 — `zoneHash` upper 96 bits silently truncated — NOT IMPLEMENTED.**
-We deliberately skipped the `require(uint256(zoneHash) >> 160 == 0)` check. It
-locks in the "taker in lower 20 bytes" convention permanently, which forecloses
-future uses of the upper 96 bits (multi-taker merkle roots, policy commitments,
-version tags). We have no third-party integrators today, and the convention is
-documented in §3.1. If we later want integrator-friendly loud failure, a zone
-redeploy is cheap (CREATE2, no state migration).
-
-**Finding 5 — Cached `_domainSeparator` may diverge on chain fork — RESOLVED
-as a side effect of Finding 1.** OTCRegistry no longer reuses Seaport's separator.
-It derives its own following the standard OZ pattern: cache for the deploy-time
-`chainid`, recompute on the fly if `block.chainid` diverges (fork-safe).
-
-**Finding 6 — All zone enforcement happens post-transfer — RESOLVED for the
-taker check.** Taker restriction moved to `authorizeOrder` (pre-transfer). ERC-20
-whitelist runs in `validateOrder` post-transfer; since Seaport reverts
-atomically on callback failure, no funds can be lost — the residual concern is
-only an execution window for transfer-hook tokens, which doesn't apply to any
-currently whitelisted ERC-20. The 2026-04-23-225357 review re-raised the
-registration-time whitelist loop as dead weight once `offer`/`consideration`
-were dropped from the struct (see the 2026-04-23-225357 changes below), so it
-too was removed — fulfillment-time enforcement remains the single source of
-truth.
-
-Status of the one finding + two high-signal leads from the 2026-04-23 Pashov AI
-follow-up review (`ocarina-trade-pashov-ai-audit-report-20260423-212803.md`).
-Again, no funds are at risk — Seaport settles the real order regardless — but
-the finding enables a durable DoS against any maker via mempool front-running,
-and the leads close defense-in-depth gaps.
-
-**2026-04-23 Finding 1 — `registerOrder` squatting via `orderHash` dedup — RESOLVED.**
-The dedup mapping is rekeyed from `mapping(bytes32 => bool)` to
-`mapping(bytes32 => mapping(address => bool))`. Each `(orderHash, maker)` pair
-is one-shot, so a front-runner who registers under their own EOA cannot brick a
-victim's slot for the same hash — only the slot they themselves can sign for.
-Discovery consumers already render `maker` as the offerer, so no UI change is
-needed; legitimate makers are reachable at their own `(hash, maker)` slot.
-
-**2026-04-23 Lead 2 — taker / `zoneHash` divergence — PARTIALLY RESOLVED; SUPERSEDED.**
-The initial fix added `zoneHash` to the `OrderRegistration` struct with a
-`TakerMismatch` revert on `address(uint160(uint256(reg.zoneHash))) != reg.taker`.
-That enforced internal consistency between two registration fields, but
-didn't bind either to the Seaport order's actual zoneHash (which is inside
-`orderURI`). The subsequent 2026-04-23-225357 redeploy drops `reg.zoneHash`
-entirely and moves the real check client-side: `verifyAndExtract` compares
-`order.parameters.zoneHash` low-20-bytes to `event.taker` and rejects
-mismatches — same pattern as the `orderHash` check.
-
-**2026-04-23 Lead 3 — ERC-1271 reentrancy in `registerOrder` — RESOLVED
-defensively.** `registered[orderHash][maker] = true` is now written before the
-signature check (CEI ordering). Solady's `isValidSignatureNow` uses `staticcall`
-to the ERC-1271 path today, so the attack isn't exploitable against this
-contract, but the CEI reorder is free insurance if solady's implementation or
-any future maker-side contract behavior changes.
-
-**2026-04-23 Lead 1 — signed offer/consideration not cross-checked against `orderHash` — MITIGATED CLIENT-SIDE; SUPERSEDED.**
-The lead observed that `reg.orderHash` was an opaque bytes32 from the contract's
-perspective: signed, but not recomputed from `reg.offer` / `reg.consideration` /
-maker / etc. The 2026-04-23-225357 follow-up re-raised this as Finding 1,
-noting the downstream effect: a maker could sign a registration whose
-`orderHash` points at a different Seaport order than the one encoded in
-`orderURI`, desyncing every `getOrderStatus` lookup. Since the signed
-offer/consideration weren't emitted or consumed downstream anyway,
-`verifyAndExtract` in `src/lib/contract.js` now re-derives the Seaport hash
-from the decoded `orderURI` and drops any event whose `orderHash` doesn't
-match — and the 2026-04-23-225357 redeploy drops `offer`/`consideration` from
-the registration struct entirely.
-
-**2026-04-23 Lead 4 — `zoneHash` upper 96 bits silently truncated — NOT IMPLEMENTED.**
-Same reasoning as the 2026-04-15 finding 4. The convention is preserved.
-
-**2026-04-23 Lead 5 — permissive ERC-1271 "yes-man" contracts — NOT IMPLEMENTED.**
-With finding 1 above resolved, the worst an attacker can do with a permissive
-contract wallet's address is register their own `(hash, maker=permissiveContract)`
-slot — equivalent to making an open offer from that identity. No dedicated
-mitigation needed.
-
-Status of the changes made for the 2026-04-23-225357 redeploy
-(`ocarina-trade-pashov-ai-audit-report-20260423-225357.md`). No funds at risk
-either — the redeploy is a simplification pass that formalizes the client-side
-trust model established in the prior review.
-
-**2026-04-23-225357 Finding 1 — `orderHash` not bound to signed offer/consideration/zoneHash — RESOLVED BY SIMPLIFICATION.**
-The registration struct drops `offer`, `consideration`, and `zoneHash`
-entirely. The frontend hash-match and taker-match checks in `verifyAndExtract`
-are now the single source of truth for binding `event.orderHash` and
-`event.taker` to the Seaport order in `orderURI`. The contract no longer
-pretends to inspect order contents — it publishes signed `(orderHash, maker,
-taker, orderURI, memo)` tuples and nothing more.
-
-**2026-04-23-225357 Finding 2 — upper 96 bits of `zoneHash` signed but not validated — OBSOLETE.**
-With `zoneHash` removed from the registration struct, the maker no longer signs
-it at OTCRegistry's domain, so there's nothing to validate. The on-chain zoneHash
-(inside the Seaport order) is still subject to the same finding-4 reservation
-for Seaport-level usage; this zone ignores upper bits by convention.
-
-**2026-04-23-225357 Lead — asymmetric whitelist between `registerOrder` and `validateOrder` — OBSOLETE.**
-`registerOrder` no longer iterates items at all, so there's no asymmetry.
-Whitelist enforcement consolidates into `validateOrder` (post-transfer, atomic
-revert on failure).
-
-Status of the one lead from the 2026-04-24 Pashov AI review
-(`ocarina-trade-pashov-ai-audit-report-20260424-010506.md`) that isn't already
-covered above. The report surfaced no confirmed findings; the other leads are
-either documented design (§9 findings 4, and the event-vs-orderURI decoupling
-resolved by `verifyAndExtract`) or latent concerns that don't apply to
-currently whitelisted tokens.
-
-**2026-04-24 Lead — unbounded `orderURI` enabling log-bloat griefing — NOT IMPLEMENTED.**
-Considered and rejected. The apparent "single-unqueryable-block" failure mode
-is already prevented by block gas limits: `LOG3` costs `1500 + 8*data_bytes`,
-so the largest physically possible event on a 30M-gas-limit chain is ~3.5 MB
-— under Alchemy's ~10 MB `eth_getLogs` response cap, so bisection always
-retrieves it. The attacker's only remaining shape is volumetric spam of many
-smaller events, which is not bounded by a per-event cap and has near-identical
-per-byte gas economics either way. A cap would therefore be cosmetic while
-creating a hard ceiling for legitimate multi-asset orders (~12 items/side at
-8 KiB, ~55 at 32 KiB, with no frontend-side guard on item count). Real
-volumetric-spam defense belongs at the indexer layer (adaptive `eth_getLogs`
-pagination), not the contract.
-
-Status of the leads from the 2026-04-25 Pashov AI review
-(`ocarina-trade-pashov-ai-audit-report-20260425-203314.md`). The report
-confirmed no findings above threshold; the leads either map to documented
-design decisions (whitelist scope, `zoneHash` upper-bit reservation, the
-`event` ↔ `orderURI` decoupling resolved by `verifyAndExtract`) or restate
-defense-in-depth concerns already handled in earlier rounds. Only one was
-worth a behavior change before redeploy.
-
-**2026-04-25 Lead — registration sig has no deadline; the publish lock is permanent — RESOLVED.**
-The `OrderRegistration` struct now carries a `uint256 deadline` field, signed
-under the same EIP-712 domain. `registerOrder` reverts `Expired` when
-`block.timestamp > deadline`. The frontend pins `deadline` to the Seaport
-order's `endTime`, fusing the two lifecycles: when the order can no longer
-be filled, the publish signature is also dead. Held signatures (e.g., signed
-for a relayer that never submits) lose validity at the same moment the
-underlying offer would. The expiry check runs before the dedup-slot write,
-so a maker whose sig expired in flight can re-sign with a fresh deadline and
-publish — the `(orderHash, maker)` slot is consumed only on a successful
-emit. No UX impact: relayers operate in seconds, and `endTime` is days to
-weeks out by default.
-
-A new CREATE2 vanity deployment is required to ship these changes (prefix
-`0x07C00000` via Nick's Factory, all four chains). The contract is also being
-renamed from `OTCZone` to `OTCRegistry` in the same redeploy — this changes
-both the bytecode and the EIP-712 domain (`name: "OTCRegistry"`), so the new
-deployment addresses will differ from the legacy ones and registration
-signatures from one cannot be replayed on the other. Legacy-zone orders are
-expected to be read-only at the point of redeploy — if any are still open, their
-links will continue to work via `getOrderFromTx` on the old zone address, but
-`queryOrderEvents` (the offers-page indexer) will only scan the new zone.
-Old-zone orders can be preserved as static JSON if we want to surface history.
-
-Status of the finding from the 2026-05-01 Pashov AI review
-(`ocarina-trade-pashov-ai-audit-report-20260501-013600.md`). No funds at risk —
-Seaport always enforces the true signed order parameters — but the finding
-allowed a maker to publish a Seaport order that bypasses zone callbacks entirely,
-rendering the ERC-20 whitelist and taker restriction unenforceable onchain.
-
-**2026-05-01 Finding 1 — Opaque registrations can publish Seaport orders that never invoke the registry zone — RESOLVED ONCHAIN (see architectural change below).**
-
-**2026-05-01 Architectural change — Drop `orderURI`; accept `OrderComponents` directly; delegate hash derivation to Seaport — IMPLEMENTED.**
-`registerOrder` now accepts `OrderComponents` (the full Seaport order parameters)
-and a `seaportSignature` rather than an opaque `bytes32 orderHash` and `string orderURI`.
-The contract calls `ISeaport(seaport).getOrderHash(components)` to derive the canonical
-order hash — no EIP-712 reimplementation, zero new hash derivation logic, tightly coupled
-only to the same Seaport contract already stored for msg.sender gating. It asserts
-`components.zone == address(this)` and `components.orderType == FULL_RESTRICTED` before
-storing, so every `OrderRegistered` event is trustworthy by construction for all consumers
-(forks, indexers, competing frontends) without any client-side cross-checks. The OTCRegistry
-registration signature covers `(orderHash, keccak(seaportSignature), keccak(memo))`:
-`orderHash` transitively binds all order fields (offerer, taker via zoneHash, endTime, etc.),
-and binding `seaportSignature` prevents a front-runner from substituting a bad Seaport sig
-using a stolen registration sig. The separate `deadline` field is dropped — the contract uses
-`components.endTime` directly. `OrderRegistered` emits `OrderComponents` and `seaportSignature`
-as structured ABI-encoded fields rather than a base64+JSON blob; `verifyAndExtract` in
-`src/lib/contract.js` becomes a straightforward reconstruction step. This fully supersedes
-the 2026-04-23-225357 client-side trust model and closes the trust tier gap for non-UI
-consumers. Net gas impact: ~6% cheaper for 1-for-1 trades, ~13% cheaper for 3-for-3 trades,
-driven by the elimination of base64+JSON calldata overhead. A new CREATE2 redeploy is required
-on all four chains (all four chains were already pending redeploy from prior audit rounds).
 
 ### Taker Refusal
 - Allow the designated taker of a directed offer to refuse it, marking it as unfillable and removing it from open offers.
@@ -641,11 +440,6 @@ on all four chains (all four chains were already pending redeploy from prior aud
 - Reduces RPC/Alchemy calls from O(full history) to O(blocks since last visit) for repeat visitors. First-time visitors still pay the full scan.
 - Best implemented once the contract address is stable (no more redeployments) and the offers page has been migrated to Alchemy or another indexed RPC. Stale zone addresses are naturally orphaned when the address changes.
 - Does not help first-time or incognito visitors. Not a substitute for proper indexing at scale, but buys significant headroom on API rate limits.
-
-### Gas Optimization — Compact orderURI Encoding
-- Replace JSON + base64 `orderURI` with a compact binary encoding, stripping field names and omitting derivable fields (zone, orderType, conduitKey). Could reduce orderURI calldata by ~60-70%.
-- No contract changes needed — `orderURI` is opaque to the contract.
-- Trade-off: harder to debug, harder to fork, fragile coupling to Seaport order structure. Not worth it unless users report gas as a pain point.
 
 ### Privy Cross-App Wallet Support
 - Platforms like Courtyard.io (Polygon) and Beezie (Base) use Privy embedded wallets. Their users can't currently connect to external dApps like ours.

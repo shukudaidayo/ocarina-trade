@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useOutletContext } from 'react-router'
-import { getOrderFromTx, getOrderStatus, fulfillOrder, cancelOrder, ensureApproval, deriveOrderStatus, getFillTxHash } from '../lib/contract'
+import { getOrderFromTx, getOrderStatus, getCounter, fulfillOrder, cancelOrder, ensureApproval, deriveOrderStatus, getFillTxHash } from '../lib/contract'
 import { checkHoldings } from '../lib/balances'
 import { getVerificationStatus } from '../lib/verification'
 import { fetchMetadata } from '../lib/metadata'
@@ -92,10 +92,13 @@ export default function Offer() {
     let cancelled = false
     async function load() {
       try {
-        const status = await getOrderStatus(Number(chainId), orderData.orderHash)
+        const [status, liveCounter] = await Promise.all([
+          getOrderStatus(Number(chainId), orderData.orderHash),
+          getCounter(Number(chainId), orderData.order.parameters.offerer).catch(() => undefined),
+        ])
         if (!cancelled) {
-          const endTime = orderData.order.parameters.endTime
-          setStatusLabel(deriveOrderStatus(status, endTime))
+          const { endTime, counter: orderCounter } = orderData.order.parameters
+          setStatusLabel(deriveOrderStatus(status, endTime, liveCounter, orderCounter))
         }
       } catch (err) {
         console.error('Failed to load order status:', err)

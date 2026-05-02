@@ -316,6 +316,15 @@ export async function getOrderStatus(chainId, orderHash) {
   })
 }
 
+export async function getCounter(chainId, offerer) {
+  const chain = CHAINS[chainId]
+  if (!chain) throw new Error(`Unsupported chain ${chainId}`)
+  return retry(async () => {
+    const seaport = getReadSeaport(chainId)
+    return seaport.getCounter(offerer)
+  })
+}
+
 /**
  * Fulfill (accept) a Seaport order. Returns { tx, wait }.
  */
@@ -513,10 +522,11 @@ export async function getFillTxHash(chainId, orderHash, offerer) {
 /**
  * Derive the status label for an order.
  */
-export function deriveOrderStatus(seaportStatus, endTime) {
+export function deriveOrderStatus(seaportStatus, endTime, liveCounter, orderCounter) {
   if (!seaportStatus) return 'unknown'
   if (seaportStatus.isCancelled) return 'cancelled'
   if (seaportStatus.totalFilled > 0 && seaportStatus.totalFilled === seaportStatus.totalSize) return 'filled'
+  if (liveCounter !== undefined && orderCounter !== undefined && BigInt(liveCounter) > BigInt(orderCounter)) return 'cancelled'
   if (endTime && Number(endTime) < Date.now() / 1000) return 'expired'
   return 'open'
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useOutletContext, useSearchParams } from 'react-router'
-import { queryOrderEvents, getOrderStatus, deriveOrderStatus } from '../lib/contract'
+import { queryOrderEvents, getOrderStatus, getCounter, deriveOrderStatus } from '../lib/contract'
 import { checkHoldings } from '../lib/balances'
 import { fetchMetadata } from '../lib/metadata'
 import { resolveENSName } from '../lib/ens'
@@ -101,6 +101,14 @@ export default function Offers() {
             const isPartial = registrations._partial
             const tagged = registrations.map((r) => ({ ...r, chainId: cid }))
 
+            const uniqueMakers = [...new Set(tagged.map((r) => r.maker))]
+            const counterMap = {}
+            await Promise.all(
+              uniqueMakers.map(async (maker) => {
+                try { counterMap[maker] = await getCounter(cid, maker) } catch { /* leave undefined */ }
+              })
+            )
+
             const BATCH_SIZE = 3
             const enriched = []
             for (let i = 0; i < tagged.length; i += BATCH_SIZE) {
@@ -111,7 +119,7 @@ export default function Offers() {
                   try {
                     const seaportStatus = await getOrderStatus(cid, reg.orderHash)
                     const endTime = reg.order?.parameters?.endTime
-                    const status = deriveOrderStatus(seaportStatus, endTime)
+                    const status = deriveOrderStatus(seaportStatus, endTime, counterMap[reg.maker], reg.order?.parameters?.counter)
                     return { ...reg, status }
                   } catch {
                     return { ...reg, status: 'unknown' }

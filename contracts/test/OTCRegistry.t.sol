@@ -3,7 +3,16 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {OTCRegistry, OrderRegistration} from "../src/OTCRegistry.sol";
-import {ZoneParameters, SpentItem, ReceivedItem, Schema, OrderComponents, Order, OfferItem, ConsiderationItem} from "seaport-types/lib/ConsiderationStructs.sol";
+import {
+    ZoneParameters,
+    SpentItem,
+    ReceivedItem,
+    Schema,
+    OrderComponents,
+    Order,
+    OfferItem,
+    ConsiderationItem
+} from "seaport-types/lib/ConsiderationStructs.sol";
 import {ItemType, OrderType} from "seaport-types/lib/ConsiderationEnums.sol";
 import {ZoneInterface} from "seaport-types/interfaces/ZoneInterface.sol";
 
@@ -13,9 +22,14 @@ import {ZoneInterface} from "seaport-types/interfaces/ZoneInterface.sol";
 /// shouldRejectValidate = true to simulate an invalid Seaport signature.
 contract MockSeaport {
     bool public shouldRejectValidate;
+    bool public shouldReturnFalseValidate;
 
     function setRejectValidate(bool reject) external {
         shouldRejectValidate = reject;
+    }
+
+    function setReturnFalseValidate(bool returnFalse) external {
+        shouldReturnFalseValidate = returnFalse;
     }
 
     function getOrderHash(OrderComponents calldata order) external pure returns (bytes32) {
@@ -24,6 +38,7 @@ contract MockSeaport {
 
     function validate(Order[] calldata) external view returns (bool) {
         require(!shouldRejectValidate, "invalid seaport sig");
+        if (shouldReturnFalseValidate) return false;
         return true;
     }
 }
@@ -44,6 +59,20 @@ contract MockContractWallet {
     }
 }
 
+contract MockERC20 {}
+
+contract MockERC165Token {
+    bytes4 private immutable supportedInterface;
+
+    constructor(bytes4 _supportedInterface) {
+        supportedInterface = _supportedInterface;
+    }
+
+    function supportsInterface(bytes4 interfaceId) external view returns (bool) {
+        return interfaceId == supportedInterface || interfaceId == 0x01ffc9a7;
+    }
+}
+
 contract OTCRegistryTest is Test {
     OTCRegistry public zone;
     MockSeaport public mockSeaport;
@@ -52,6 +81,9 @@ contract OTCRegistryTest is Test {
     address public weth = address(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
     address public usdc = address(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
     address public fakeToken = address(0xDEAD);
+    address public fakeERC20;
+    address public erc721;
+    address public erc1155;
 
     uint256 public makerPk = 0xA11CE;
     address public maker;
@@ -61,9 +93,8 @@ contract OTCRegistryTest is Test {
     // Dummy Seaport signature — real sig verified by Seaport at fulfillment, not here.
     bytes internal constant SEAPORT_SIG = hex"deadbeefdeadbeef";
 
-    bytes32 internal constant REGISTRATION_TYPEHASH = keccak256(
-        "OrderRegistration(bytes32 orderHash,bytes seaportSignature,string memo)"
-    );
+    bytes32 internal constant REGISTRATION_TYPEHASH =
+        keccak256("OrderRegistration(bytes32 orderHash,bytes seaportSignature,string memo)");
 
     uint256 internal constant DEFAULT_END_TIME = 1e18;
 
@@ -71,6 +102,9 @@ contract OTCRegistryTest is Test {
         maker = vm.addr(makerPk);
         mockSeaport = new MockSeaport();
         seaport = address(mockSeaport);
+        fakeERC20 = address(new MockERC20());
+        erc721 = address(new MockERC165Token(0x80ac58cd));
+        erc1155 = address(new MockERC165Token(0xd9b67a26));
 
         address[] memory tokens = new address[](2);
         tokens[0] = weth;
@@ -87,26 +121,20 @@ contract OTCRegistryTest is Test {
     {
         OfferItem[] memory offer = new OfferItem[](1);
         offer[0] = OfferItem({
-            itemType: ItemType.ERC721,
-            token: address(0xAAA),
-            identifierOrCriteria: 1,
-            startAmount: 1,
-            endAmount: 1
+            itemType: ItemType.ERC721, token: erc721, identifierOrCriteria: 1, startAmount: 1, endAmount: 1
         });
 
         ConsiderationItem[] memory consideration = new ConsiderationItem[](1);
         consideration[0] = ConsiderationItem({
             itemType: ItemType.ERC721,
-            token: address(0xBBB),
+            token: erc721,
             identifierOrCriteria: 2,
             startAmount: 1,
             endAmount: 1,
             recipient: payable(_maker)
         });
 
-        bytes32 zoneHash = _taker != address(0)
-            ? bytes32(uint256(uint160(_taker)))
-            : bytes32(0);
+        bytes32 zoneHash = _taker != address(0) ? bytes32(uint256(uint160(_taker))) : bytes32(0);
 
         return OrderComponents({
             offerer: _maker,
@@ -127,17 +155,9 @@ contract OTCRegistryTest is Test {
         return mockSeaport.getOrderHash(components);
     }
 
-    function _digest(bytes32 orderHash, bytes memory seaportSig, string memory memo)
-        internal
-        view
-        returns (bytes32)
-    {
-        bytes32 structHash = keccak256(abi.encode(
-            REGISTRATION_TYPEHASH,
-            orderHash,
-            keccak256(seaportSig),
-            keccak256(bytes(memo))
-        ));
+    function _digest(bytes32 orderHash, bytes memory seaportSig, string memory memo) internal view returns (bytes32) {
+        bytes32 structHash =
+            keccak256(abi.encode(REGISTRATION_TYPEHASH, orderHash, keccak256(seaportSig), keccak256(bytes(memo))));
         return keccak256(abi.encodePacked(bytes2(0x1901), zone.DOMAIN_SEPARATOR(), structHash));
     }
 
@@ -150,11 +170,44 @@ contract OTCRegistryTest is Test {
         return abi.encodePacked(r, s, v);
     }
 
-    function _signedReg(address _taker, string memory memo)
+    function _buildComponentsWithERC20(address _maker, address _taker, address offerToken, address considerToken)
         internal
         view
-        returns (OrderRegistration memory)
+        returns (OrderComponents memory)
     {
+        OfferItem[] memory offer = new OfferItem[](1);
+        offer[0] = OfferItem({
+            itemType: ItemType.ERC20, token: offerToken, identifierOrCriteria: 0, startAmount: 1e18, endAmount: 1e18
+        });
+
+        ConsiderationItem[] memory consideration = new ConsiderationItem[](1);
+        consideration[0] = ConsiderationItem({
+            itemType: ItemType.ERC20,
+            token: considerToken,
+            identifierOrCriteria: 0,
+            startAmount: 2000e6,
+            endAmount: 2000e6,
+            recipient: payable(_maker)
+        });
+
+        bytes32 zoneHash = _taker != address(0) ? bytes32(uint256(uint160(_taker))) : bytes32(0);
+
+        return OrderComponents({
+            offerer: _maker,
+            zone: address(zone),
+            offer: offer,
+            consideration: consideration,
+            orderType: OrderType.FULL_RESTRICTED,
+            startTime: 0,
+            endTime: DEFAULT_END_TIME,
+            zoneHash: zoneHash,
+            salt: 12345,
+            conduitKey: bytes32(0),
+            counter: 0
+        });
+    }
+
+    function _signedReg(address _taker, string memory memo) internal view returns (OrderRegistration memory) {
         OrderComponents memory components = _buildComponents(maker, _taker, DEFAULT_END_TIME);
         bytes32 orderHash = _orderHash(components);
         return OrderRegistration({
@@ -167,10 +220,10 @@ contract OTCRegistryTest is Test {
 
     function _zoneParams(bytes32 zoneHash) internal view returns (ZoneParameters memory) {
         SpentItem[] memory offer = new SpentItem[](1);
-        offer[0] = SpentItem(ItemType.ERC721, address(0xAAA), 1, 1);
+        offer[0] = SpentItem(ItemType.ERC721, erc721, 1, 1);
 
         ReceivedItem[] memory consideration = new ReceivedItem[](1);
-        consideration[0] = ReceivedItem(ItemType.ERC721, address(0xBBB), 2, 1, payable(maker));
+        consideration[0] = ReceivedItem(ItemType.ERC721, erc721, 2, 1, payable(maker));
 
         bytes32[] memory orderHashes = new bytes32[](0);
 
@@ -292,10 +345,7 @@ contract OTCRegistryTest is Test {
     function test_registerOrder_revertsBadSignatureLength() public {
         OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
         OrderRegistration memory reg = OrderRegistration({
-            components: components,
-            seaportSignature: SEAPORT_SIG,
-            signature: new bytes(63),
-            memo: ""
+            components: components, seaportSignature: SEAPORT_SIG, signature: new bytes(63), memo: ""
         });
 
         vm.expectRevert(OTCRegistry.InvalidSignature.selector);
@@ -311,10 +361,7 @@ contract OTCRegistryTest is Test {
         if (v == 28) yParityAndS = bytes32(uint256(s) | (1 << 255));
 
         OrderRegistration memory reg = OrderRegistration({
-            components: components,
-            seaportSignature: SEAPORT_SIG,
-            signature: abi.encodePacked(r, yParityAndS),
-            memo: ""
+            components: components, seaportSignature: SEAPORT_SIG, signature: abi.encodePacked(r, yParityAndS), memo: ""
         });
         assertEq(reg.signature.length, 64);
         zone.registerOrder(reg);
@@ -327,10 +374,7 @@ contract OTCRegistryTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(makerPk, _digest(orderHash, SEAPORT_SIG, ""));
 
         OrderRegistration memory reg = OrderRegistration({
-            components: components,
-            seaportSignature: SEAPORT_SIG,
-            signature: abi.encode(v, r, s),
-            memo: ""
+            components: components, seaportSignature: SEAPORT_SIG, signature: abi.encode(v, r, s), memo: ""
         });
         zone.registerOrder(reg);
     }
@@ -341,12 +385,8 @@ contract OTCRegistryTest is Test {
         OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
         components.zone = address(0xDEAD);
 
-        OrderRegistration memory reg = OrderRegistration({
-            components: components,
-            seaportSignature: SEAPORT_SIG,
-            signature: "",
-            memo: ""
-        });
+        OrderRegistration memory reg =
+            OrderRegistration({components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: ""});
         vm.expectRevert(OTCRegistry.WrongZone.selector);
         zone.registerOrder(reg);
     }
@@ -355,13 +395,29 @@ contract OTCRegistryTest is Test {
         OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
         components.orderType = OrderType.FULL_OPEN;
 
-        OrderRegistration memory reg = OrderRegistration({
-            components: components,
-            seaportSignature: SEAPORT_SIG,
-            signature: "",
-            memo: ""
-        });
+        OrderRegistration memory reg =
+            OrderRegistration({components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: ""});
         vm.expectRevert(OTCRegistry.WrongOrderType.selector);
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsNonzeroConduitKey() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.conduitKey = bytes32(uint256(1));
+
+        OrderRegistration memory reg =
+            OrderRegistration({components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: ""});
+        vm.expectRevert(OTCRegistry.InvalidConduitKey.selector);
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsConsiderationRecipientNotMaker() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.consideration[0].recipient = payable(stranger);
+
+        OrderRegistration memory reg =
+            OrderRegistration({components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: ""});
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidRecipient.selector, stranger));
         zone.registerOrder(reg);
     }
 
@@ -444,6 +500,14 @@ contract OTCRegistryTest is Test {
         zone.registerOrder(reg);
     }
 
+    function test_registerOrder_revertsSeaportValidationFalse() public {
+        OrderRegistration memory reg = _signedReg(taker, "");
+        mockSeaport.setReturnFalseValidate(true);
+
+        vm.expectRevert(OTCRegistry.SeaportValidationFailed.selector);
+        zone.registerOrder(reg);
+    }
+
     // ==================== Deadline (endTime) ====================
 
     function test_registerOrder_revertsExpiredOrder() public {
@@ -518,14 +582,13 @@ contract OTCRegistryTest is Test {
 
     function test_registerOrder_revertsMemoTooLong() public {
         bytes memory longMemo = new bytes(281);
-        for (uint256 i = 0; i < 281; i++) longMemo[i] = "a";
+        for (uint256 i = 0; i < 281; i++) {
+            longMemo[i] = "a";
+        }
 
         OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
         OrderRegistration memory reg = OrderRegistration({
-            components: components,
-            seaportSignature: SEAPORT_SIG,
-            signature: "",
-            memo: string(longMemo)
+            components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: string(longMemo)
         });
 
         vm.expectRevert(OTCRegistry.MemoTooLong.selector);
@@ -534,10 +597,189 @@ contract OTCRegistryTest is Test {
 
     function test_registerOrder_maxLengthMemo() public {
         bytes memory maxMemo = new bytes(280);
-        for (uint256 i = 0; i < 280; i++) maxMemo[i] = "a";
+        for (uint256 i = 0; i < 280; i++) {
+            maxMemo[i] = "a";
+        }
 
         OrderRegistration memory reg = _signedReg(taker, string(maxMemo));
         zone.registerOrder(reg);
+    }
+
+    // ==================== ERC-20 whitelist at registration ====================
+
+    function test_registerOrder_revertsNonWhitelistedERC20_offer() public {
+        OrderComponents memory components = _buildComponentsWithERC20(maker, taker, fakeToken, usdc);
+        OrderRegistration memory reg =
+            OrderRegistration({components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: ""});
+
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.TokenNotWhitelisted.selector, fakeToken));
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsNonWhitelistedERC20_consideration() public {
+        OrderComponents memory components = _buildComponentsWithERC20(maker, taker, weth, fakeToken);
+        OrderRegistration memory reg =
+            OrderRegistration({components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: ""});
+
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.TokenNotWhitelisted.selector, fakeToken));
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_whitelistedERC20_passes() public {
+        OrderComponents memory components = _buildComponentsWithERC20(maker, taker, weth, usdc);
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        zone.registerOrder(reg);
+        assertTrue(zone.registered(orderHash, maker));
+    }
+
+    function test_registerOrder_revertsVariableAmount_offer() public {
+        OrderComponents memory components = _buildComponentsWithERC20(maker, taker, weth, usdc);
+        components.offer[0].endAmount = components.offer[0].startAmount + 1;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                OTCRegistry.VariableAmount.selector, components.offer[0].startAmount, components.offer[0].endAmount
+            )
+        );
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsVariableAmount_consideration() public {
+        OrderComponents memory components = _buildComponentsWithERC20(maker, taker, weth, usdc);
+        components.consideration[0].endAmount = components.consideration[0].startAmount + 1;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                OTCRegistry.VariableAmount.selector,
+                components.consideration[0].startAmount,
+                components.consideration[0].endAmount
+            )
+        );
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsVariableAmount_erc1155() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.offer[0].itemType = ItemType.ERC1155;
+        components.offer[0].token = erc1155;
+        components.offer[0].startAmount = 3;
+        components.offer[0].endAmount = 4;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.VariableAmount.selector, 3, 4));
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsERC20MasqueradingAsERC721_offer() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.offer[0].token = fakeERC20;
+        components.offer[0].identifierOrCriteria = 1e18;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(
+            abi.encodeWithSelector(OTCRegistry.InvalidTokenStandard.selector, fakeERC20, bytes4(0x80ac58cd))
+        );
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsERC20MasqueradingAsERC721_consideration() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.consideration[0].token = fakeERC20;
+        components.consideration[0].identifierOrCriteria = 2000e6;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(
+            abi.encodeWithSelector(OTCRegistry.InvalidTokenStandard.selector, fakeERC20, bytes4(0x80ac58cd))
+        );
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsERC20WithIdentifier() public {
+        OrderComponents memory components = _buildComponentsWithERC20(maker, taker, weth, usdc);
+        components.offer[0].identifierOrCriteria = 1;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(OTCRegistry.InvalidERC20Identifier.selector);
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsERC721AmountNotOne() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.offer[0].startAmount = 2;
+        components.offer[0].endAmount = 2;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidERC721Amount.selector, 2));
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_erc1155PassesERC165Check() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.offer[0].itemType = ItemType.ERC1155;
+        components.offer[0].token = erc1155;
+        components.offer[0].startAmount = 3;
+        components.offer[0].endAmount = 3;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        zone.registerOrder(reg);
+        assertTrue(zone.registered(orderHash, maker));
     }
 
     // ==================== authorizeOrder ====================
@@ -633,6 +875,64 @@ contract OTCRegistryTest is Test {
         params.offer[0] = SpentItem(ItemType.ERC20, weth, 0, 1e18);
         params.consideration = new ReceivedItem[](1);
         params.consideration[0] = ReceivedItem(ItemType.ERC20, usdc, 0, 2000e6, payable(maker));
+
+        vm.prank(seaport);
+        bytes4 result = zone.validateOrder(params);
+        assertEq(result, zone.validateOrder.selector);
+    }
+
+    function test_validateOrder_revertsConsiderationRecipientNotOfferer() public {
+        ZoneParameters memory params = _zoneParams(bytes32(0));
+        params.consideration[0].recipient = payable(stranger);
+
+        vm.prank(seaport);
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidRecipient.selector, stranger));
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsERC20MasqueradingAsERC721_offer() public {
+        ZoneParameters memory params = _zoneParams(bytes32(0));
+        params.offer[0] = SpentItem(ItemType.ERC721, fakeERC20, 1e18, 1);
+
+        vm.prank(seaport);
+        vm.expectRevert(
+            abi.encodeWithSelector(OTCRegistry.InvalidTokenStandard.selector, fakeERC20, bytes4(0x80ac58cd))
+        );
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsERC20MasqueradingAsERC721_consideration() public {
+        ZoneParameters memory params = _zoneParams(bytes32(0));
+        params.consideration[0] = ReceivedItem(ItemType.ERC721, fakeERC20, 2000e6, 1, payable(maker));
+
+        vm.prank(seaport);
+        vm.expectRevert(
+            abi.encodeWithSelector(OTCRegistry.InvalidTokenStandard.selector, fakeERC20, bytes4(0x80ac58cd))
+        );
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsERC20WithIdentifier() public {
+        ZoneParameters memory params = _zoneParams(bytes32(0));
+        params.offer[0] = SpentItem(ItemType.ERC20, weth, 1, 1e18);
+
+        vm.prank(seaport);
+        vm.expectRevert(OTCRegistry.InvalidERC20Identifier.selector);
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsERC721AmountNotOne() public {
+        ZoneParameters memory params = _zoneParams(bytes32(0));
+        params.offer[0] = SpentItem(ItemType.ERC721, erc721, 1, 2);
+
+        vm.prank(seaport);
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidERC721Amount.selector, 2));
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_erc1155PassesERC165Check() public {
+        ZoneParameters memory params = _zoneParams(bytes32(0));
+        params.offer[0] = SpentItem(ItemType.ERC1155, erc1155, 1, 3);
 
         vm.prank(seaport);
         bytes4 result = zone.validateOrder(params);
