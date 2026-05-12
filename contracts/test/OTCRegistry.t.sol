@@ -82,6 +82,12 @@ contract MockERC165Token {
     }
 }
 
+contract MockPermissiveERC165Token {
+    function supportsInterface(bytes4) external pure returns (bool) {
+        return true;
+    }
+}
+
 contract OTCRegistryTest is Test {
     OTCRegistry public zone;
     MockSeaport public mockSeaport;
@@ -227,6 +233,20 @@ contract OTCRegistryTest is Test {
         });
     }
 
+    function _signedRegFromComponents(OrderComponents memory components, string memory memo)
+        internal
+        view
+        returns (OrderRegistration memory)
+    {
+        bytes32 orderHash = _orderHash(components);
+        return OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, memo),
+            memo: memo
+        });
+    }
+
     function _zoneParams(bytes32 zoneHash) internal view returns (ZoneParameters memory) {
         SpentItem[] memory offer = new SpentItem[](1);
         offer[0] = SpentItem(ItemType.ERC721, erc721, 1, 1);
@@ -284,6 +304,23 @@ contract OTCRegistryTest is Test {
 
     function test_constructor_storesSeaport() public view {
         assertEq(zone.seaport(), seaport);
+    }
+
+    function test_constructor_revertsZeroSeaport() public {
+        address[] memory tokens = new address[](1);
+        tokens[0] = weth;
+
+        vm.expectRevert(OTCRegistry.InvalidSeaport.selector);
+        new OTCRegistry(tokens, address(0));
+    }
+
+    function test_constructor_revertsZeroWhitelistToken() public {
+        address[] memory tokens = new address[](2);
+        tokens[0] = weth;
+        tokens[1] = address(0);
+
+        vm.expectRevert(OTCRegistry.InvalidWhitelistToken.selector);
+        new OTCRegistry(tokens, seaport);
     }
 
     // ==================== Domain separator ====================
@@ -428,6 +465,21 @@ contract OTCRegistryTest is Test {
         OrderRegistration memory reg =
             OrderRegistration({components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: ""});
         vm.expectRevert(OTCRegistry.InvalidConduitKey.selector);
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsNonCanonicalZoneHash() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.zoneHash = bytes32((uint256(1) << 160) | uint256(uint160(taker)));
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidZoneHash.selector, components.zoneHash));
         zone.registerOrder(reg);
     }
 
@@ -874,6 +926,24 @@ contract OTCRegistryTest is Test {
         zone.registerOrder(reg);
     }
 
+    function test_registerOrder_revertsPermissiveERC165Token() public {
+        address permissiveToken = address(new MockPermissiveERC165Token());
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.offer[0].token = permissiveToken;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(
+            abi.encodeWithSelector(OTCRegistry.InvalidTokenStandard.selector, permissiveToken, bytes4(0x80ac58cd))
+        );
+        zone.registerOrder(reg);
+    }
+
     function test_registerOrder_revertsERC20WithIdentifier() public {
         OrderComponents memory components = _buildComponentsWithERC20(maker, taker, weth, usdc);
         components.offer[0].identifierOrCriteria = 1;
@@ -923,6 +993,140 @@ contract OTCRegistryTest is Test {
         assertTrue(zone.registered(orderHash, maker));
     }
 
+    // ==================== Fuzz: registration lifecycle ====================
+
+    function testFuzz_registerOrderCounterMustMatch(uint256 currentCounter, uint256 providedCounter) public {
+        vm.assume(currentCounter != providedCounter);
+        mockSeaport.setCounter(maker, currentCounter);
+
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.counter = providedCounter;
+        OrderRegistration memory reg = _signedRegFromComponents(components, "");
+
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidCounter.selector, providedCounter, currentCounter));
+        zone.registerOrder(reg);
+        assertFalse(zone.registered(_orderHash(components), maker));
+    }
+
+    function testFuzz_registerOrderMatchingCounterRegisters(uint256 currentCounter, uint256 salt, address fuzzTaker)
+        public
+    {
+        mockSeaport.setCounter(maker, currentCounter);
+
+        OrderComponents memory components = _buildComponents(maker, fuzzTaker, DEFAULT_END_TIME);
+        components.counter = currentCounter;
+        components.salt = salt;
+        OrderRegistration memory reg = _signedRegFromComponents(components, "");
+        bytes32 orderHash = _orderHash(components);
+
+        zone.registerOrder(reg);
+        assertTrue(zone.registered(orderHash, maker));
+    }
+
+    function testFuzz_failedRegistrationDoesNotConsumeSlot(uint256 salt) public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.salt = salt;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(0xB0B, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(OTCRegistry.InvalidSignature.selector);
+        zone.registerOrder(reg);
+        assertFalse(zone.registered(orderHash, maker));
+    }
+
+    function testFuzz_duplicateRegisteredOrderAlwaysReverts(uint256 salt) public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.salt = salt;
+        OrderRegistration memory reg = _signedRegFromComponents(components, "");
+        bytes32 orderHash = _orderHash(components);
+
+        zone.registerOrder(reg);
+
+        vm.expectRevert(OTCRegistry.AlreadyRegistered.selector);
+        zone.registerOrder(reg);
+        assertTrue(zone.registered(orderHash, maker));
+    }
+
+    function testFuzz_registeredOrderValidates(bytes32 salt, address fuzzTaker) public {
+        OrderComponents memory components = _buildComponents(maker, fuzzTaker, DEFAULT_END_TIME);
+        components.salt = uint256(salt);
+        OrderRegistration memory reg = _signedRegFromComponents(components, "");
+        bytes32 orderHash = _orderHash(components);
+        zone.registerOrder(reg);
+
+        ZoneParameters memory params = _zoneParams(components.zoneHash);
+        params.orderHash = orderHash;
+        params.offerer = maker;
+
+        vm.prank(seaport);
+        bytes4 result = zone.validateOrder(params);
+        assertEq(result, zone.validateOrder.selector);
+    }
+
+    function testFuzz_unregisteredOrderNeverValidates(bytes32 orderHash, address offerer) public {
+        vm.assume(offerer != address(0));
+        ZoneParameters memory params = _zoneParams(bytes32(0));
+        params.orderHash = orderHash;
+        params.offerer = offerer;
+
+        vm.prank(seaport);
+        vm.expectRevert(OTCRegistry.OrderNotRegistered.selector);
+        zone.validateOrder(params);
+    }
+
+    function testFuzz_validateOrderRechecksRuntimeERC20Whitelist(address runtimeToken, bool offerSide) public {
+        vm.assume(runtimeToken != weth && runtimeToken != usdc);
+
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        if (offerSide) {
+            params.offer = new SpentItem[](1);
+            params.offer[0] = SpentItem(ItemType.ERC20, runtimeToken, 0, 1);
+        } else {
+            params.consideration = new ReceivedItem[](1);
+            params.consideration[0] = ReceivedItem(ItemType.ERC20, runtimeToken, 0, 1, payable(maker));
+        }
+
+        vm.prank(seaport);
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.TokenNotWhitelisted.selector, runtimeToken));
+        zone.validateOrder(params);
+    }
+
+    function testFuzz_validateOrderAllowsRuntimeWhitelistedERC20(bool useWeth, bool offerSide) public {
+        address token = useWeth ? weth : usdc;
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        if (offerSide) {
+            params.offer = new SpentItem[](1);
+            params.offer[0] = SpentItem(ItemType.ERC20, token, 0, 1);
+        } else {
+            params.consideration = new ReceivedItem[](1);
+            params.consideration[0] = ReceivedItem(ItemType.ERC20, token, 0, 1, payable(maker));
+        }
+
+        vm.prank(seaport);
+        bytes4 result = zone.validateOrder(params);
+        assertEq(result, zone.validateOrder.selector);
+    }
+
+    function testFuzz_authorizeOrderUsesLow160Bits(bytes32 zoneHash, address fulfiller) public {
+        address allowedTaker = address(uint160(uint256(zoneHash)));
+        ZoneParameters memory params = _zoneParams(zoneHash);
+        params.fulfiller = fulfiller;
+
+        vm.prank(seaport);
+        if (allowedTaker == address(0) || fulfiller == allowedTaker) {
+            bytes4 result = zone.authorizeOrder(params);
+            assertEq(result, zone.authorizeOrder.selector);
+        } else {
+            vm.expectRevert(OTCRegistry.Unauthorized.selector);
+            zone.authorizeOrder(params);
+        }
+    }
+
     // ==================== authorizeOrder ====================
 
     function test_authorizeOrder_requiresSeaportCaller() public {
@@ -960,8 +1164,8 @@ contract OTCRegistryTest is Test {
         zone.authorizeOrder(params);
     }
 
-    /// @dev Upper 96 bits of zoneHash are reserved (SPEC §3.1) — authorizeOrder
-    /// must ignore them so Seaport's existing convention still works.
+    /// @dev Registration rejects non-canonical zoneHash values; authorizeOrder
+    /// only extracts the low 160 bits from the Seaport-provided zone parameters.
     function test_authorizeOrder_ignoresUpperZoneHashBits() public {
         uint256 reserved = (uint256(0xDEADBEEF) << 160);
         bytes32 zoneHash = bytes32(reserved | uint256(uint160(taker)));

@@ -63,6 +63,9 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     error MissingItemAmount();
     error InvalidCounter(uint256 providedCounter, uint256 currentCounter);
     error OrderNotRegistered();
+    error InvalidZoneHash(bytes32 zoneHash);
+    error InvalidSeaport();
+    error InvalidWhitelistToken();
 
     event OrderRegistered(
         bytes32 indexed orderHash,
@@ -74,8 +77,10 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     );
 
     constructor(address[] memory _tokens, address _seaport) {
+        if (_seaport == address(0)) revert InvalidSeaport();
         whitelistedTokens = _tokens;
         for (uint256 i = 0; i < _tokens.length; i++) {
+            if (_tokens[i] == address(0)) revert InvalidWhitelistToken();
             whitelistedERC20[_tokens[i]] = true;
         }
         seaport = _seaport;
@@ -116,6 +121,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         if (reg.components.zone != address(this)) revert WrongZone();
         if (reg.components.orderType != OrderType.FULL_RESTRICTED) revert WrongOrderType();
         if (reg.components.conduitKey != bytes32(0)) revert InvalidConduitKey();
+        _checkZoneHash(reg.components.zoneHash);
         uint256 currentCounter = SeaportInterface(seaport).getCounter(reg.components.offerer);
         if (reg.components.counter != currentCounter) {
             revert InvalidCounter(reg.components.counter, currentCounter);
@@ -242,6 +248,10 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         if (recipient != offerer) revert InvalidRecipient(recipient);
     }
 
+    function _checkZoneHash(bytes32 zoneHash) internal pure {
+        if (uint256(zoneHash) >> 160 != 0) revert InvalidZoneHash(zoneHash);
+    }
+
     function _checkItem(ItemType itemType, address token, uint256 identifier, uint256 amount) internal view {
         if (amount == 0) revert MissingItemAmount();
 
@@ -268,7 +278,11 @@ contract OTCRegistry is ZoneInterface, EIP712 {
 
     function _checkSupportsInterface(address token, bytes4 interfaceId) internal view {
         try IERC165(token).supportsInterface(interfaceId) returns (bool supported) {
-            if (supported) return;
+            if (supported) {
+                try IERC165(token).supportsInterface(0xffffffff) returns (bool invalidSupported) {
+                    if (!invalidSupported) return;
+                } catch {}
+            }
         } catch {}
 
         revert InvalidTokenStandard(token, interfaceId);

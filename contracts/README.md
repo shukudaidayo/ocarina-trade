@@ -27,6 +27,12 @@ $ forge build
 $ forge test
 ```
 
+Fork integration tests are skipped unless `MAINNET_RPC_URL` is set. The frontend uses PublicNode for Ethereum JSON-RPC, so the public default is:
+
+```shell
+$ MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com forge test --match-path test/OTCRegistryFork.t.sol
+```
+
 ### Format
 
 ```shell

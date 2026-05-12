@@ -1,6 +1,6 @@
 import { BrowserProvider, Contract, Interface, JsonRpcProvider, zeroPadValue, ZeroHash, parseUnits } from 'ethers'
 import { Seaport } from '@opensea/seaport-js'
-import { ItemType } from '@opensea/seaport-js/lib/constants'
+import { ItemType, OrderType } from '@opensea/seaport-js/lib/constants'
 import { CHAINS, SEAPORT_ADDRESS, ZONE_ADDRESSES, ZONE_DEPLOY_BLOCKS, ZONE_ABI, WHITELISTED_ERC20 } from './constants'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
@@ -274,6 +274,10 @@ function verifyAndExtract(parsedOrLog) {
 export async function getOrderFromTx(chainId, txHash) {
   const chain = CHAINS[chainId]
   if (!chain) throw new Error(`Unsupported chain ${chainId}`)
+  const zoneAddress = ZONE_ADDRESSES[chainId]
+  if (!zoneAddress) throw new Error(`No OTCRegistry deployed on chain ${chainId}`)
+  const expectedZone = zoneAddress.toLowerCase()
+
   return retry(async () => {
     const provider = new JsonRpcProvider(chain.rpcUrl)
     const receipt = await provider.getTransactionReceipt(txHash)
@@ -281,12 +285,23 @@ export async function getOrderFromTx(chainId, txHash) {
 
     const iface = new Interface(ZONE_ABI)
     for (const log of receipt.logs) {
+      if (log.address.toLowerCase() !== expectedZone) continue
       let parsed
       try { parsed = iface.parseLog(log) } catch { continue }
       if (parsed?.name !== 'OrderRegistered') continue
       const extracted = verifyAndExtract(parsed)
       if (!extracted) throw new Error('Order registration failed verification — the event does not match the signed order.')
-      return { zoneAddress: receipt.to, ...extracted }
+      if (extracted.order.parameters.zone.toLowerCase() !== expectedZone) {
+        throw new Error('Order registration failed verification — the order uses an unexpected zone.')
+      }
+      if (extracted.order.parameters.orderType !== OrderType.FULL_RESTRICTED) {
+        throw new Error('Order registration failed verification — the order is not restricted by the registry.')
+      }
+      const derivedHash = getReadSeaport(chainId).getOrderHash(extracted.order.parameters)
+      if (derivedHash.toLowerCase() !== extracted.orderHash.toLowerCase()) {
+        throw new Error('Order registration failed verification — the event order hash does not match the decoded order.')
+      }
+      return { zoneAddress, ...extracted }
     }
     throw new Error('No OrderRegistered event found in transaction')
   })

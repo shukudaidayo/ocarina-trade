@@ -31,10 +31,12 @@ sequenceDiagram
     Z->>Z: Assert zone == address(this)
     Z->>Z: Assert orderType == FULL_RESTRICTED
     Z->>Z: Assert conduitKey == bytes32(0)
+    Z->>Z: Require canonical zoneHash (upper 96 bits == 0)
     Z->>S: getCounter(offerer)
     S-->>Z: Current maker counter
     Z->>Z: Require components.counter == current counter
-    Z->>Z: Validate item shape, recipients, native side, and ERC-20 whitelist
+    Z->>Z: Validate item shape, recipients, native side, ERC-20 whitelist, and ERC-165
+    Note over Z: ERC-165 validation also probes 0xffffffff<br/>to reject permissive responders
     Z->>Z: orderHash = ISeaport.getOrderHash(components) (delegates to Seaport)
     Z->>Z: Check !registered[orderHash][maker]
     Note over Z: registered is both duplicate-publication guard<br/>and settlement allowlist
@@ -60,7 +62,9 @@ sequenceDiagram
     F->>R: getTransactionReceipt(txHash)
     R-->>F: Receipt with OrderRegistered event
 
+    F->>F: Require log.address == canonical OTCRegistry for chainId
     F->>F: Parse event → orderHash, maker, taker, components, seaportSignature, memo
+    F->>F: Recheck registry zone, FULL_RESTRICTED orderType, and derived orderHash
     F->>F: Reconstruct OrderWithCounter from components + seaportSignature
 
     F->>S: getOrderStatus(orderHash)

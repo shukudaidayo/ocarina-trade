@@ -19,6 +19,8 @@ deployers/
 
 # Claude
 .claude/
+.agents/
+.codex/
 CLAUDE.md
 .claudeignore
 
