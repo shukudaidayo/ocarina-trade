@@ -41,6 +41,7 @@ contract ForkERC721 {
 
 contract OTCRegistryForkTest is Test {
     address internal constant SEAPORT_1_6 = 0x0000000000000068F116a894984e2DB1123eB395;
+    string internal constant PUBLIC_MAINNET_RPC_URL = "https://ethereum-rpc.publicnode.com";
 
     bytes32 internal constant REGISTRATION_TYPEHASH =
         keccak256("OrderRegistration(bytes32 orderHash,bytes seaportSignature,string memo)");
@@ -57,8 +58,7 @@ contract OTCRegistryForkTest is Test {
     address internal stranger;
 
     function setUp() public {
-        string memory rpcUrl = vm.envOr("MAINNET_RPC_URL", string(""));
-        vm.skip(bytes(rpcUrl).length == 0, "MAINNET_RPC_URL not set");
+        string memory rpcUrl = vm.envOr("MAINNET_RPC_URL", PUBLIC_MAINNET_RPC_URL);
         vm.createSelectFork(rpcUrl);
 
         seaport = SeaportInterface(SEAPORT_1_6);
@@ -86,7 +86,7 @@ contract OTCRegistryForkTest is Test {
         assertTrue(zone.registered(orderHash, maker));
 
         vm.prank(taker);
-        bool fulfilled = seaport.fulfillOrder(_order(components, seaportSignature), bytes32(0));
+        bool fulfilled = seaport.fulfillOrder(_order(components, ""), bytes32(0));
 
         assertTrue(fulfilled);
         assertEq(token.ownerOf(1), taker);

@@ -244,16 +244,15 @@ function componentsFromEvent(c) {
  *
  * The contract now verifies zone, orderType, taker/zoneHash alignment, and
  * derives orderHash via ISeaport.getOrderHash(components) before emitting —
- * so the event is trustworthy by construction. This function reconstructs the
- * order object from the structured event fields rather than decoding an opaque
- * base64 blob, and returns null only if the event data is malformed.
+ * so the event is trustworthy by construction. Registration pre-validates the
+ * order hash in Seaport, so fulfillment uses an empty signature.
  */
 function verifyAndExtract(parsedOrLog) {
   const args = parsedOrLog.args
   try {
     const order = {
       parameters: componentsFromEvent(args.components),
-      signature: args.seaportSignature,
+      signature: '0x',
     }
     return {
       orderHash: args.orderHash,
@@ -269,7 +268,7 @@ function verifyAndExtract(parsedOrLog) {
 
 /**
  * Fetch order data from a registerOrder transaction hash.
- * Returns the parsed OrderRegistered event data + decoded signed order.
+ * Returns the parsed OrderRegistered event data + decoded validated order.
  */
 export async function getOrderFromTx(chainId, txHash) {
   const chain = CHAINS[chainId]
@@ -402,6 +401,7 @@ function dedupeByOrderHash(registrations) {
 }
 
 async function queryViaBlockscout(chainId, zoneAddress, chain) {
+  const expectedZone = zoneAddress.toLowerCase()
   const url = `${chain.blockscoutApi}?module=account&action=txlist&address=${zoneAddress}&startblock=0&endblock=99999999&sort=asc`
   const res = await fetch(url)
   if (!res.ok) return null
@@ -431,6 +431,7 @@ async function queryViaBlockscout(chainId, zoneAddress, chain) {
           const receipt = await retry(() => provider.getTransactionReceipt(tx.hash))
           if (!receipt) return null
           for (const log of receipt.logs) {
+            if (log.address.toLowerCase() !== expectedZone) continue
             let parsed
             try { parsed = iface.parseLog(log) } catch { continue }
             if (parsed?.name !== 'OrderRegistered') continue

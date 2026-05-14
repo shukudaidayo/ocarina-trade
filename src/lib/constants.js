@@ -120,7 +120,6 @@ export const ZONE_ABI = [
       { name: 'maker', type: 'address', indexed: true },
       { name: 'taker', type: 'address', indexed: true },
       { ...ORDER_COMPONENTS_ABI, indexed: false },
-      { name: 'seaportSignature', type: 'bytes', indexed: false },
       { name: 'memo', type: 'string', indexed: false },
     ],
     anonymous: false,

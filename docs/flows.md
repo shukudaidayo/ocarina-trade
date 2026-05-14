@@ -45,7 +45,7 @@ sequenceDiagram
     Z->>S: validate([{ parameters, seaportSignature }])
     S-->>Z: true or revert
     Z->>Z: taker = address(uint160(zoneHash))
-    Z->>Z: emit OrderRegistered(orderHash, maker, taker, components, seaportSignature, memo)
+    Z->>Z: emit OrderRegistered(orderHash, maker, taker, components, memo)
     Z-->>F: Tx receipt
 
     F->>F: Navigate to /offer/{chainId}/{txHash}
@@ -63,9 +63,9 @@ sequenceDiagram
     R-->>F: Receipt with OrderRegistered event
 
     F->>F: Require log.address == canonical OTCRegistry for chainId
-    F->>F: Parse event → orderHash, maker, taker, components, seaportSignature, memo
+    F->>F: Parse event → orderHash, maker, taker, components, memo
     F->>F: Recheck registry zone, FULL_RESTRICTED orderType, and derived orderHash
-    F->>F: Reconstruct OrderWithCounter from components + seaportSignature
+    F->>F: Reconstruct OrderWithCounter from components + signature 0x
 
     F->>S: getOrderStatus(orderHash)
     S-->>F: { isCancelled, totalFilled, totalSize }

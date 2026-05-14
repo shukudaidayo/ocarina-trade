@@ -314,12 +314,29 @@ contract OTCRegistryTest is Test {
         new OTCRegistry(tokens, address(0));
     }
 
+    function test_constructor_revertsNonContractSeaport() public {
+        address[] memory tokens = new address[](1);
+        tokens[0] = weth;
+
+        vm.expectRevert(OTCRegistry.InvalidSeaport.selector);
+        new OTCRegistry(tokens, address(0x1234));
+    }
+
     function test_constructor_revertsZeroWhitelistToken() public {
         address[] memory tokens = new address[](2);
         tokens[0] = weth;
         tokens[1] = address(0);
 
         vm.expectRevert(OTCRegistry.InvalidWhitelistToken.selector);
+        new OTCRegistry(tokens, seaport);
+    }
+
+    function test_constructor_revertsDuplicateWhitelistToken() public {
+        address[] memory tokens = new address[](2);
+        tokens[0] = weth;
+        tokens[1] = weth;
+
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.DuplicateWhitelistToken.selector, weth));
         new OTCRegistry(tokens, seaport);
     }
 
@@ -362,7 +379,7 @@ contract OTCRegistryTest is Test {
         bytes32 orderHash = _orderHash(reg.components);
 
         vm.expectEmit(true, true, true, true);
-        emit OTCRegistry.OrderRegistered(orderHash, maker, taker, reg.components, SEAPORT_SIG, "");
+        emit OTCRegistry.OrderRegistered(orderHash, maker, taker, reg.components, "");
         zone.registerOrder(reg);
         assertTrue(zone.registered(orderHash, maker));
     }
@@ -372,7 +389,7 @@ contract OTCRegistryTest is Test {
         bytes32 orderHash = _orderHash(reg.components);
 
         vm.expectEmit(true, true, true, true);
-        emit OTCRegistry.OrderRegistered(orderHash, maker, address(0), reg.components, SEAPORT_SIG, "");
+        emit OTCRegistry.OrderRegistered(orderHash, maker, address(0), reg.components, "");
         zone.registerOrder(reg);
     }
 
@@ -382,7 +399,7 @@ contract OTCRegistryTest is Test {
 
         vm.prank(stranger);
         vm.expectEmit(true, true, true, true);
-        emit OTCRegistry.OrderRegistered(orderHash, maker, taker, reg.components, SEAPORT_SIG, "");
+        emit OTCRegistry.OrderRegistered(orderHash, maker, taker, reg.components, "");
         zone.registerOrder(reg);
     }
 
@@ -468,6 +485,28 @@ contract OTCRegistryTest is Test {
         zone.registerOrder(reg);
     }
 
+    function test_registerOrder_revertsEmptyOffer() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.offer = new OfferItem[](0);
+
+        OrderRegistration memory reg =
+            OrderRegistration({components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: ""});
+
+        vm.expectRevert(OTCRegistry.EmptyOffer.selector);
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsEmptyConsideration() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.consideration = new ConsiderationItem[](0);
+
+        OrderRegistration memory reg =
+            OrderRegistration({components: components, seaportSignature: SEAPORT_SIG, signature: "", memo: ""});
+
+        vm.expectRevert(OTCRegistry.EmptyConsideration.selector);
+        zone.registerOrder(reg);
+    }
+
     function test_registerOrder_revertsNonCanonicalZoneHash() public {
         OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
         components.zoneHash = bytes32((uint256(1) << 160) | uint256(uint160(taker)));
@@ -507,7 +546,7 @@ contract OTCRegistryTest is Test {
         });
 
         vm.expectEmit(true, true, true, true);
-        emit OTCRegistry.OrderRegistered(orderHash, maker, taker, reg.components, SEAPORT_SIG, "");
+        emit OTCRegistry.OrderRegistered(orderHash, maker, taker, reg.components, "");
         zone.registerOrder(reg);
         assertTrue(zone.registered(orderHash, maker));
     }
@@ -690,7 +729,7 @@ contract OTCRegistryTest is Test {
         bytes32 orderHash = _orderHash(reg.components);
 
         vm.expectEmit(true, true, true, true);
-        emit OTCRegistry.OrderRegistered(orderHash, maker, taker, reg.components, SEAPORT_SIG, "Looking for any Azuki");
+        emit OTCRegistry.OrderRegistered(orderHash, maker, taker, reg.components, "Looking for any Azuki");
         zone.registerOrder(reg);
     }
 

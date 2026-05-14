@@ -66,21 +66,24 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     error InvalidZoneHash(bytes32 zoneHash);
     error InvalidSeaport();
     error InvalidWhitelistToken();
+    error DuplicateWhitelistToken(address token);
+    error EmptyOffer();
+    error EmptyConsideration();
 
     event OrderRegistered(
         bytes32 indexed orderHash,
         address indexed maker,
         address indexed taker,
         OrderComponents components,
-        bytes seaportSignature,
         string memo
     );
 
     constructor(address[] memory _tokens, address _seaport) {
-        if (_seaport == address(0)) revert InvalidSeaport();
+        if (_seaport == address(0) || _seaport.code.length == 0) revert InvalidSeaport();
         whitelistedTokens = _tokens;
         for (uint256 i = 0; i < _tokens.length; i++) {
             if (_tokens[i] == address(0)) revert InvalidWhitelistToken();
+            if (whitelistedERC20[_tokens[i]]) revert DuplicateWhitelistToken(_tokens[i]);
             whitelistedERC20[_tokens[i]] = true;
         }
         seaport = _seaport;
@@ -101,7 +104,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         return whitelistedTokens;
     }
 
-    /// @notice Register a signed order for public discovery.
+    /// @notice Register and pre-validate an order for public discovery.
     ///
     /// Accepts the full Seaport OrderComponents and delegates hash derivation to
     /// the Seaport contract via SeaportInterface.getOrderHash — no EIP-712 reimplementation.
@@ -121,6 +124,8 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         if (reg.components.zone != address(this)) revert WrongZone();
         if (reg.components.orderType != OrderType.FULL_RESTRICTED) revert WrongOrderType();
         if (reg.components.conduitKey != bytes32(0)) revert InvalidConduitKey();
+        if (reg.components.offer.length == 0) revert EmptyOffer();
+        if (reg.components.consideration.length == 0) revert EmptyConsideration();
         _checkZoneHash(reg.components.zoneHash);
         uint256 currentCounter = SeaportInterface(seaport).getCounter(reg.components.offerer);
         if (reg.components.counter != currentCounter) {
@@ -168,10 +173,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
 
         // Validate the Seaport signature via Seaport itself. This prevents publishing
         // an unfillable offer and — as a side effect — marks the order pre-validated in
-        // Seaport's storage, reducing taker gas at fill time. If this order hash was
-        // already validated directly in Seaport, Seaport may skip re-checking the
-        // signature bytes supplied here; the registry signature still binds those bytes
-        // for event consumers, while Seaport's validated order hash authorizes fill.
+        // Seaport's storage, so takers can fulfill with an empty signature.
         Order[] memory orders = new Order[](1);
         orders[0] = Order({
             parameters: OrderParameters({
@@ -193,7 +195,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
 
         address taker = address(uint160(uint256(reg.components.zoneHash)));
 
-        emit OrderRegistered(orderHash, maker, taker, reg.components, reg.seaportSignature, reg.memo);
+        emit OrderRegistered(orderHash, maker, taker, reg.components, reg.memo);
     }
 
     /// @notice Called by Seaport before token transfers. Enforces taker restriction pre-transfer.
