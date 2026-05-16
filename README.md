@@ -6,9 +6,9 @@ Peer-to-peer OTC trades for NFTs and tokens. No backend, no accounts, no middlem
 
 ## What it does
 
-- **Create an offer** — Select the assets you want to trade (ERC-721, ERC-1155, whitelisted ERC-20, or ETH on the taker side), optionally restrict to a specific taker, sign the order, and publish it on-chain. A shareable link is generated.
+- **Create an offer** — Select the assets you want to trade (exact ERC-721/ERC-1155 tokens, collection-wide Any Token NFT criteria, whitelisted ERC-20, or ETH on the taker side), optionally restrict to a specific taker, sign the order, and publish it on-chain. A shareable link is generated.
 - **View an offer** — Anyone with the link can see both sides of the trade, verify the assets on Etherscan, and check the order status (open, filled, cancelled, expired).
-- **Accept an offer** — The eligible taker approves their assets and executes the atomic trade in a single transaction. Both sides exchange assets simultaneously — no escrow, no partial fills.
+- **Accept an offer** — The eligible taker approves their assets, resolves any Any Token items to concrete token IDs, and executes the atomic trade in a single transaction. Both sides exchange assets simultaneously — no escrow, no partial fills.
 
 ## How it works
 
@@ -21,6 +21,14 @@ The only custom contract is **OTCRegistry**, which:
 - Requires prior registration before an OTCRegistry-zoned order can settle
 
 OTCRegistry never touches user funds. Assets stay in your wallet until the trade executes.
+
+## Any Token offers
+
+For NFT contracts, an offer or consideration item can target **Any Token** from that contract instead of one exact token ID. This is implemented with Seaport criteria items using wildcard criteria (`identifierOrCriteria = 0`).
+
+- ERC-721 quantity is represented by adding multiple Any Token items for the same contract. The fulfiller chooses one concrete token ID for each item at fill time.
+- ERC-1155 Any Token items can include an amount, and the fulfiller chooses the token ID at fill time.
+- Merged collections that span multiple contracts do not show the Add Any Token button in the picker, because the target contract would be ambiguous. Use manual entry to choose a specific contract.
 
 ## Contracts
 

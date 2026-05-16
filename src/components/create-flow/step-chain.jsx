@@ -2,16 +2,6 @@ import { useState } from 'react'
 import { ethers } from 'ethers'
 import { useCreateFlow } from './context'
 import { ZONE_ADDRESSES, CHAINS } from '../../lib/constants'
-import { useAppKitNetwork } from '@reown/appkit/react'
-import { mainnet, base, polygon } from '@reown/appkit/networks'
-import { ink } from '../../lib/appkit'
-
-const APPKIT_NETWORKS = {
-  1: mainnet,
-  8453: base,
-  137: polygon,
-  57073: ink,
-}
 
 const CHAIN_LOGOS = {
   1: new URL('../../assets/tokens/eth.png', import.meta.url).href,
@@ -42,7 +32,6 @@ const DEPLOYED_CHAINS = Object.entries(ZONE_ADDRESSES)
 
 export default function StepChain({ wallet }) {
   const { next, chainId, setChainId, setMakerAssets, setTakerAssets } = useCreateFlow()
-  const { switchNetwork } = useAppKitNetwork()
   const [noGasChain, setNoGasChain] = useState(null)
 
   const handleSelect = async (id) => {
@@ -57,7 +46,7 @@ export default function StepChain({ wallet }) {
     // Switch wallet network if needed
     if (wallet.chainId !== id) {
       try {
-        await switchNetwork(APPKIT_NETWORKS[id])
+        await switchWalletNetwork(wallet.provider, id)
       } catch {
         // User rejected — stay on this screen
         return
@@ -122,4 +111,27 @@ export default function StepChain({ wallet }) {
       )}
     </div>
   )
+}
+
+async function switchWalletNetwork(provider, chainId) {
+  const chain = CHAINS[chainId]
+  const hexChainId = '0x' + chainId.toString(16)
+  try {
+    await provider.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: hexChainId }],
+    })
+  } catch (err) {
+    if (err?.code !== 4902 && err?.data?.originalError?.code !== 4902) throw err
+    await provider.request({
+      method: 'wallet_addEthereumChain',
+      params: [{
+        chainId: hexChainId,
+        chainName: chain?.name || `Chain ${chainId}`,
+        nativeCurrency: { name: chain?.nativeSymbol || 'Ether', symbol: chain?.nativeSymbol || 'ETH', decimals: 18 },
+        rpcUrls: [chain?.rpcUrl],
+        blockExplorerUrls: chain?.blockscoutApi ? [chain.blockscoutApi.replace(/\/api\/?$/, '')] : undefined,
+      }],
+    })
+  }
 }

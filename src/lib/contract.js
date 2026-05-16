@@ -1,9 +1,12 @@
-import { BrowserProvider, Contract, Interface, JsonRpcProvider, zeroPadValue, ZeroHash, parseUnits } from 'ethers'
+import { BrowserProvider, Contract, Interface, JsonRpcProvider, zeroPadValue, ZeroHash, ZeroAddress, parseUnits } from 'ethers'
 import { Seaport } from '@opensea/seaport-js'
 import { ItemType, OrderType } from '@opensea/seaport-js/lib/constants'
 import { CHAINS, SEAPORT_ADDRESS, ZONE_ADDRESSES, ZONE_DEPLOY_BLOCKS, ZONE_ABI, WHITELISTED_ERC20 } from './constants'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+const SEAPORT_FULFILL_ABI = [
+  'function fulfillAdvancedOrder((tuple(address offerer,address zone,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)[] offer,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 totalOriginalConsiderationItems) parameters,bytes signature,bytes extraData,uint120 numerator,uint120 denominator) advancedOrder,tuple(uint256 orderIndex,uint8 side,uint256 index,uint256 identifier,bytes32[] criteriaProof)[] criteriaResolvers,bytes32 fulfillerConduitKey,address recipient) payable returns (bool fulfilled)',
+]
 
 // EIP-712 types for OTCRegistry.registerOrder. Mirrors the typehash in OTCRegistry.sol.
 const REGISTRATION_TYPES = {
@@ -96,9 +99,22 @@ function toSeaportOfferItem(asset, chainId) {
       amount: parseUnits(asset.amount || '0', decimals).toString(),
     }
   }
-  const seaportItemType = asset.assetType === 'ERC1155' || asset.itemType === ItemType.ERC1155
+  const isERC1155 = asset.assetType === 'ERC1155' || asset.itemType === ItemType.ERC1155 || asset.itemType === ItemType.ERC1155_WITH_CRITERIA
+  const seaportItemType = isERC1155
     ? ItemType.ERC1155
     : ItemType.ERC721
+
+  if (asset.criteria || asset.itemType === ItemType.ERC721_WITH_CRITERIA || asset.itemType === ItemType.ERC1155_WITH_CRITERIA) {
+    const item = {
+      itemType: seaportItemType,
+      token: asset.token,
+      criteria: asset.criteriaRoot || '0',
+    }
+    if (seaportItemType === ItemType.ERC1155) {
+      item.amount = (asset.amount || '1').toString()
+    }
+    return item
+  }
 
   const item = {
     itemType: seaportItemType,
@@ -342,7 +358,57 @@ export async function getCounter(chainId, offerer) {
 /**
  * Fulfill (accept) a Seaport order. Returns { tx, wait }.
  */
-export async function fulfillOrder(rawProvider, order) {
+function isCriteriaItem(item) {
+  const itemType = Number(item.itemType)
+  return itemType === ItemType.ERC721_WITH_CRITERIA || itemType === ItemType.ERC1155_WITH_CRITERIA
+}
+
+function buildCriteriaResolvers(order, criteriaSelections = {}) {
+  const resolvers = []
+  order.parameters.offer.forEach((item, index) => {
+    if (!isCriteriaItem(item)) return
+    const identifier = criteriaSelections.offer?.[index]
+    if (!identifier && identifier !== '0') throw new Error('Choose a token ID for every criteria item before accepting this offer.')
+    resolvers.push({ orderIndex: 0, side: 0, index, identifier: identifier.toString(), criteriaProof: [] })
+  })
+  order.parameters.consideration.forEach((item, index) => {
+    if (!isCriteriaItem(item)) return
+    const identifier = criteriaSelections.consideration?.[index]
+    if (!identifier && identifier !== '0') throw new Error('Choose a token ID for every criteria item before accepting this offer.')
+    resolvers.push({ orderIndex: 0, side: 1, index, identifier: identifier.toString(), criteriaProof: [] })
+  })
+  return resolvers
+}
+
+function nativeConsiderationValue(order) {
+  return order.parameters.consideration.reduce((sum, item) => (
+    Number(item.itemType) === ItemType.NATIVE ? sum + BigInt(item.startAmount) : sum
+  ), 0n)
+}
+
+export async function fulfillOrder(rawProvider, order, criteriaSelections = null) {
+  if (criteriaSelections) {
+    const criteriaResolvers = buildCriteriaResolvers(order, criteriaSelections)
+    if (criteriaResolvers.length > 0) {
+      const signer = await getSigner(rawProvider)
+      const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
+      const advancedOrder = {
+        parameters: order.parameters,
+        signature: order.signature,
+        extraData: '0x',
+        numerator: 1,
+        denominator: 1,
+      }
+      const tx = await seaport.fulfillAdvancedOrder(
+        advancedOrder,
+        criteriaResolvers,
+        ZeroHash,
+        ZeroAddress,
+        { value: nativeConsiderationValue(order) }
+      )
+      return { tx, wait: () => tx.wait() }
+    }
+  }
   const seaport = await getSeaport(rawProvider)
   const { executeAllActions } = await seaport.fulfillOrder({ order })
   const tx = await executeAllActions()

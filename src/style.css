@@ -1718,6 +1718,10 @@ footer {
   font-size: 1rem;
 }
 
+.collection-any-btn {
+  margin-bottom: 0.75rem;
+}
+
 /* Quantity Picker */
 
 .quantity-picker {
@@ -1755,6 +1759,37 @@ footer {
   display: flex;
   gap: 0.5rem;
   align-items: center;
+}
+
+.manual-any-toggle {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.manual-any-toggle input {
+  width: auto;
+}
+
+.criteria-resolver {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.criteria-resolver input {
+  width: 9rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.35rem 0.5rem;
+  font-family: inherit;
 }
 
 /* Cash Tab */

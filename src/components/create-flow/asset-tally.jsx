@@ -34,6 +34,11 @@ function describeAsset(asset, chainId) {
     const symbol = asset._symbol || info?.symbol || truncAddr(asset.token)
     return `${asset.amount} ${symbol}`
   }
+  if (asset.criteria) {
+    const name = asset._collection || asset._name?.replace(/^Any\s+/, '') || truncAddr(asset.token)
+    const amount = asset.assetType === 'ERC1155' && Number(asset.amount) > 1 ? `${asset.amount}x ` : ''
+    return `${amount}Any ${name}`
+  }
   const name = asset._collection || asset._name || truncAddr(asset.token)
   const amount = asset.assetType === 'ERC1155' && Number(asset.amount) > 1 ? `${asset.amount}× ` : ''
   return `${amount}${name}`

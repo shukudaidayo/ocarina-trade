@@ -28,7 +28,7 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 ## 2. V1 Scope
 
 - **Chains**: Ethereum, Base, Polygon, Ink
-- **Token types**: ERC-721, ERC-1155, ERC-20 (whitelisted only), and native ETH (taker side only — Seaport requires the caller to provide ETH via `msg.value`, so the maker cannot offer native ETH in a standard `fulfillOrder` flow)
+- **Token types**: ERC-721, ERC-1155, ERC-20 (whitelisted only), and native ETH (taker side only — Seaport requires the caller to provide ETH via `msg.value`, so the maker cannot offer native ETH in a standard `fulfillOrder` flow). ERC-721 and ERC-1155 collection-wide wildcard criteria items are supported as "Any token" items for single-contract collections.
 - **Trade structure**: Multi-asset <-> multi-asset (each side can have 1+ items)
 - **Counterparty**: Optionally restricted to a specific address, or open to anyone
 - **Expiration**: Required (default 30 days, configurable in UI)
@@ -67,9 +67,9 @@ OrderComponents {
 }
 
 OfferItem / ConsiderationItem {
-  itemType        // 0=NATIVE, 1=ERC20, 2=ERC721, 3=ERC1155
+  itemType        // 0=NATIVE, 1=ERC20, 2=ERC721, 3=ERC1155, 4=ERC721_WITH_CRITERIA, 5=ERC1155_WITH_CRITERIA
   token           // Contract address
-  identifierOrCriteria  // Token ID (or merkle root for criteria-based)
+  identifierOrCriteria  // Token ID, merkle root, or 0 for wildcard criteria
   startAmount     // Amount (must be nonzero; 1 for ERC-721)
   endAmount       // Final amount; Ocarina V1 requires this to equal startAmount
 }
@@ -84,6 +84,7 @@ For a simple NFT-for-NFT trade:
    - `consideration`: The NFTs/tokens the maker wants, with every `recipient` set to the maker's address
    - `orderType`: `FULL_RESTRICTED` (2) — always restricted, so the OTCRegistry validates every order (ERC-20 whitelist + optional taker restriction)
    - `startAmount == endAmount` and `startAmount > 0` for every item — fixed, nonzero swaps only; variable-price/dutch-style orders and zero-amount items are rejected by OTCRegistry
+   - Criteria-based "Any token" items use wildcard criteria (`identifierOrCriteria == 0`) against a single NFT contract. ERC-721 criteria quantity is represented as multiple `ERC721_WITH_CRITERIA` items, each with amount `1`; for example, "two of any Milady Makers" is two separate wildcard ERC-721 criteria items for the Milady contract.
    - `startTime`: now
    - `endTime`: expiration timestamp; must be greater than or equal to `startTime`
    - `conduitKey`: `bytes32(0)` — use Seaport directly for transfers; nonzero conduit keys are rejected by OTCRegistry
@@ -94,7 +95,7 @@ For a simple NFT-for-NFT trade:
 
 4. **Maker shares a URL** containing the chain ID and registration tx hash.
 
-5. **Taker opens the URL**, reviews the trade, approves their assets to Seaport, and calls `fulfillOrder()` — one onchain transaction that atomically exchanges all assets.
+5. **Taker opens the URL**, reviews the trade, resolves any criteria items to concrete token IDs, approves their assets to Seaport, and fulfills the order — one onchain transaction that atomically exchanges all assets. Standard orders use `fulfillOrder`; criteria orders use `fulfillAdvancedOrder` with criteria resolvers.
 
 #### Taker Restriction
 
@@ -142,6 +143,14 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 - ERC-1155: `setApprovalForAll(seaportAddress, true)`
 - ERC-20: `approve(seaportAddress, amount)`
 
+#### Criteria-Based Items
+
+The frontend supports collection-wide wildcard criteria items, displayed as **Any token**. These are encoded using Seaport criteria item types with `identifierOrCriteria == 0`, meaning any token ID from the specified contract can satisfy the item. The UI intentionally does not currently build Merkle-root criteria sets.
+
+Criteria items are contract-specific. In the NFT picker, `Add Any Token` appears only when the drilled collection maps to exactly one underlying contract. For merged display groups that combine multiple contracts (for example ENS-style grouped collections), the button is hidden because the contract to sign against would be ambiguous. Users can still create a criteria item for a specific contract through manual entry.
+
+Multiple wildcard ERC-721 items from the same contract are allowed by adding multiple `Any token` entries. Because Seaport and OTCRegistry require ERC-721 amount `1`, each desired ERC-721 must be represented as its own criteria item. On the offer detail page, the fulfiller must enter a concrete token ID for each criteria item before accepting. The UI rejects duplicate concrete token IDs for multiple ERC-721 criteria items from the same contract, since the same ERC-721 cannot satisfy two separate items in one atomic fill. ERC-1155 criteria items may use an amount greater than `1` and are resolved to a concrete token ID at fulfillment.
+
 #### Key Differences from Custom Contract
 
 | Aspect | Custom Contract | Seaport |
@@ -163,6 +172,7 @@ Users approve the Seaport contract directly (or a conduit) to transfer their ass
 - **Wallet connection**: Reown AppKit (WalletConnect + injected providers)
 - **Styling**: Minimal custom CSS. No CSS framework.
 - **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection. For chains without Alchemy NFT API support (currently Ink), falls back to the Blockscout v2 API (`/api/v2/addresses/{addr}/nft/collections` and `/api/v2/tokens/{contract}/instances`). If `VITE_ALCHEMY_API_KEY` is not set, the asset picker shows no wallet holdings — users can still add assets via manual contract address / token ID entry.
+- **Criteria item creation**: The asset picker lets users add `Any token` criteria items from single-contract collection drill-down views, or from manual entry by providing a concrete contract address and selecting the criteria option. Merged collections that aggregate multiple contracts do not show the collection-level `Any token` action.
 - **NFT metadata**: Alchemy `getNFTMetadata` (pre-cached thumbnails, fast) with onchain tokenURI + IPFS/HTTP/Arweave resolution as fallback
 - **Name resolution**: Forward resolution (name → address) for taker input, reverse resolution (address → name) for display throughout the UI. Uses mainnet provider since both systems live on L1. Supports ENS (`.eth` and other ENS TLDs) and `.wei` names (wei-names contract at `0x0000000000696760E15f265e828DB644A0c242EB`). ENS is checked first for reverse resolution; `.wei` is the fallback. For forward resolution, `.wei` names are routed directly to the wei-names contract. When a user enters a name during offer creation, the original name (`.wei` or `.eth`) is preserved and displayed through the review flow.
 - **Build**: Vite, with code splitting — heavy dependencies (AppKit, ethers, seaport-js) are lazy-loaded. The homepage renders with only React + Router (~75KB entry chunk). Wallet connection (AppKit) loads asynchronously in the background.
@@ -387,12 +397,13 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 3. UI validates: checks Seaport for order status, checks expiration, and reconstructs the Seaport order from the registry event with `signature: "0x"`. The order hash's Seaport validation status plus the registry event are the trust anchors.
 4. UI displays all assets with verification indicators
 5. UI checks onchain holdings for both maker (offer) and taker (consideration), flagging any missing assets
+   - For criteria items, the offer page first asks the fulfiller to choose the concrete token ID(s), then uses those token IDs for holdings checks, approval checks, verification warnings, and criteria resolver calldata.
 6. Counterparty reviews the trade
 7. Connects wallet
 8. Clicks "Accept Trade"
 9. UI checks NFTs the taker is receiving for verification status. If any are unverified, a modal warns the user and lists unverified assets with OpenSea links. User must confirm or cancel.
 10. UI shows a step-by-step checklist: one step per token approval, plus the final fulfillment action. Each step shows status (pending → signing → confirming → done/failed).
-11. UI walks through approval steps, then calls `fulfillOrder` — one transaction, atomic trade
+11. UI walks through approval steps, then calls `fulfillOrder` for exact-item orders or `fulfillAdvancedOrder` for criteria orders — one transaction, atomic trade
 12. Assets are exchanged
 
 ### Cancelling a Trade
@@ -428,11 +439,6 @@ Historical audit findings, dispositions, and redeploy notes are tracked in
 - Taker verification: either store the taker address at registration time (adds storage cost) or require the caller to pass order parameters so the zone can re-derive the taker from `zoneHash`.
 - Only meaningful for directed offers — open offers have no specific taker to refuse.
 - Requires OTCRegistry redeployment on all chains (contract is immutable). Bundle with other contract changes to avoid redundant redeploys.
-
-### Criteria-Based Offers
-- Seaport natively supports criteria-based offers (e.g., "any Bored Ape")
-- Use merkle trees of token IDs, or wildcard (criteria = 0 for any token in collection)
-- UI: "I'll trade my X for any token from collection Y"
 
 ### V2 - Solana Support
 - Separate program, shared UI

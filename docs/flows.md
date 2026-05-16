@@ -9,7 +9,8 @@ sequenceDiagram
     participant S as Seaport
     participant Z as OTCRegistry
 
-    F->>F: Build order params
+    F->>F: Build order params from exact assets and optional Any Token criteria items
+    Note over F: Any Token uses ERC721_WITH_CRITERIA / ERC1155_WITH_CRITERIA<br/>with identifierOrCriteria = 0 (wildcard)
 
     F->>W: setApprovalForAll(seaport, true)
     W->>S: Approval tx (per collection)
@@ -36,6 +37,7 @@ sequenceDiagram
     S-->>Z: Current maker counter
     Z->>Z: Require components.counter == current counter
     Z->>Z: Validate item shape, recipients, native side, ERC-20 whitelist, and ERC-165
+    Note over Z: ERC-721 criteria items must have amount 1;<br/>multiple Any ERC-721s are separate criteria items
     Note over Z: ERC-165 validation also probes 0xffffffff<br/>to reject permissive responders
     Z->>Z: orderHash = ISeaport.getOrderHash(components) (delegates to Seaport)
     Z->>Z: Check !registered[orderHash][maker]
@@ -75,6 +77,7 @@ sequenceDiagram
 
     F->>F: Derive status (open / filled / cancelled / expired)
     Note over F: Counter > order.counter means bulk-cancelled
+    F->>F: If criteria items exist, wait for fulfiller token ID selections
     F->>F: Display trade details
 ```
 
@@ -87,12 +90,24 @@ sequenceDiagram
     participant S as Seaport
     participant Z as OTCRegistry
 
+    alt Order contains criteria items
+        F->>F: Ask fulfiller for concrete token ID per criteria item
+        F->>F: Reject missing selections
+        F->>F: Reject duplicate ERC-721 token IDs for same contract
+        F->>F: Use selected token IDs for holdings / verification checks
+    end
+
     F->>W: setApprovalForAll(seaport, true)
     W->>S: Approval tx (per collection)
     S-->>F: Confirmed
 
-    F->>W: fulfillOrder(signedOrder)
-    W->>S: fulfillOrder tx
+    alt Exact-item order
+        F->>W: fulfillOrder(signedOrder)
+        W->>S: fulfillOrder tx
+    else Criteria order
+        F->>W: fulfillAdvancedOrder(advancedOrder, criteriaResolvers)
+        W->>S: fulfillAdvancedOrder tx
+    end
 
     S->>Z: authorizeOrder(zoneParameters)
     Z->>Z: Require msg.sender == seaport
@@ -141,9 +156,17 @@ sequenceDiagram
     participant Z as OTCRegistry
     participant S as Seaport
 
-    F->>Z: queryFilter('OrderRegistered', fromBlock, toBlock)
-    Note over F,Z: Chunked in 50k block ranges
-    Z-->>F: All OrderRegistered events
+    F->>Z: Blockscout account txlist for OTCRegistry
+    Note over F,Z: Primary path: fetch registerOrder tx receipts<br/>and parse OrderRegistered logs
+    Z-->>F: OrderRegistered events
+
+    alt Blockscout unavailable
+        F->>Z: eth_getLogs fallback
+        Note over F,Z: Chunked recent scan from deploy block / lookback window
+        Z-->>F: OrderRegistered events
+    end
+
+    F->>F: Dedupe by orderHash, earliest registration wins
 
     loop For each order
         F->>S: getOrderStatus(orderHash)
@@ -158,5 +181,6 @@ sequenceDiagram
     F->>F: Derive status per order
     Note over F: Exclude filled, cancelled, expired,<br/>and counter-invalidated orders from Open
     F->>F: Filter by status tab (Open / All)
+    F->>F: Render criteria NFTs as Any token without metadata lookup
     F->>F: Display offer cards
 ```

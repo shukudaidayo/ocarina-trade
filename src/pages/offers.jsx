@@ -7,6 +7,7 @@ import AddressDisplay from '../components/address-display'
 import { ZONE_ADDRESSES, CHAINS, WHITELISTED_ERC20 } from '../lib/constants'
 import { formatUnits } from 'ethers'
 import { formatTokenAmount } from '../lib/wallet'
+import { ItemType } from '@opensea/seaport-js/lib/constants'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const PAGE_SIZE = 20
@@ -374,14 +375,16 @@ function AssetSummary({ items, chainId }) {
 
 function NFTAssetItem({ chainId, token, tokenId, itemType, amount }) {
   const [meta, setMeta] = useState(null)
+  const isCriteria = itemType === ItemType.ERC721_WITH_CRITERIA || itemType === ItemType.ERC1155_WITH_CRITERIA
 
   useEffect(() => {
+    if (isCriteria) return
     let cancelled = false
     fetchMetadata(chainId, token, tokenId, itemType === 3 ? 1 : 0).then((m) => {
       if (!cancelled) setMeta(m)
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [chainId, token, tokenId, itemType])
+  }, [chainId, token, tokenId, itemType, isCriteria])
 
   return (
     <span className="offer-asset-item">
@@ -389,10 +392,10 @@ function NFTAssetItem({ chainId, token, tokenId, itemType, amount }) {
         {meta?.image ? (
           <img src={meta.image} alt={meta.name || ''} loading="lazy" />
         ) : (
-          <span className="offer-asset-thumb-placeholder">?</span>
+          <span className="offer-asset-thumb-placeholder">{isCriteria ? 'Any' : '?'}</span>
         )}
       </span>
-      <span>{meta?.name || `#${tokenId}`}{Number(amount) > 1 && ` x${amount}`}</span>
+      <span>{isCriteria ? 'Any token' : (meta?.name || `#${tokenId}`)}{Number(amount) > 1 && ` x${amount}`}</span>
     </span>
   )
 }

@@ -37,6 +37,62 @@ function friendlyFillError(err) {
   return err.reason || err.shortMessage || 'Transaction failed.'
 }
 
+function isCriteriaItem(item) {
+  const itemType = Number(item.itemType)
+  return itemType === ItemType.ERC721_WITH_CRITERIA || itemType === ItemType.ERC1155_WITH_CRITERIA
+}
+
+function exactItemType(item) {
+  const itemType = Number(item.itemType)
+  if (itemType === ItemType.ERC721_WITH_CRITERIA) return ItemType.ERC721
+  if (itemType === ItemType.ERC1155_WITH_CRITERIA) return ItemType.ERC1155
+  return itemType
+}
+
+function resolveCriteriaItems(items, selections = {}) {
+  const missing = new Set()
+  const resolved = items.map((item, index) => {
+    if (!isCriteriaItem(item)) return item
+    const selected = selections[index]
+    if (!selected && selected !== '0') {
+      missing.add(index)
+      return { ...item, itemType: exactItemType(item) }
+    }
+    return {
+      ...item,
+      itemType: exactItemType(item),
+      identifierOrCriteria: selected,
+    }
+  })
+  return { items: resolved, missing }
+}
+
+function applyMissingCriteria(results, missing) {
+  return results.map((result, index) => (
+    missing.has(index) ? { held: false, reason: 'Choose token ID' } : result
+  ))
+}
+
+function hasMissingCriteria(params, selections) {
+  return params.offer.some((item, index) => isCriteriaItem(item) && !selections.offer?.[index] && selections.offer?.[index] !== '0')
+    || params.consideration.some((item, index) => isCriteriaItem(item) && !selections.consideration?.[index] && selections.consideration?.[index] !== '0')
+}
+
+function hasDuplicateERC721CriteriaSelections(params, selections) {
+  return ['offer', 'consideration'].some((side) => {
+    const seen = new Set()
+    return params[side].some((item, index) => {
+      if (Number(item.itemType) !== ItemType.ERC721_WITH_CRITERIA) return false
+      const selected = selections[side]?.[index]
+      if (!selected && selected !== '0') return false
+      const key = `${item.token.toLowerCase()}:${selected}`
+      if (seen.has(key)) return true
+      seen.add(key)
+      return false
+    })
+  })
+}
+
 export default function Offer() {
   useEffect(() => { document.title = 'Offer — ocarina.trade' }, [])
   const { chainId, txHash } = useParams()
@@ -60,6 +116,7 @@ export default function Offer() {
   const [shareImageBlob, setShareImageBlob] = useState(null)
   const [shareImageUrl, setShareImageUrl] = useState(null)
   const [generatingImage, setGeneratingImage] = useState(false)
+  const [criteriaSelections, setCriteriaSelections] = useState({ offer: {}, consideration: {} })
 
   // Fetch order data from tx hash
   useEffect(() => {
@@ -150,12 +207,14 @@ export default function Offer() {
       const offerItems = await Promise.all(params.offer.map(async (o) => {
         const it = Number(o.itemType)
         let _name = null, _image = null
-        if (it >= 2) {
+        if (it === ItemType.ERC721 || it === ItemType.ERC1155) {
           try {
             const meta = await fetchMetadata(cid, o.token, o.identifierOrCriteria, it === 3 ? 1 : 0)
             _name = meta?.name
             _image = meta?.image
           } catch { /* ignore */ }
+        } else if (isCriteriaItem(o)) {
+          _name = 'Any token'
         }
         return { ...o, itemType: it, _name, _image }
       }))
@@ -163,12 +222,14 @@ export default function Offer() {
       const considerationItems = await Promise.all(params.consideration.map(async (c) => {
         const it = Number(c.itemType)
         let _name = null, _image = null
-        if (it >= 2) {
+        if (it === ItemType.ERC721 || it === ItemType.ERC1155) {
           try {
             const meta = await fetchMetadata(cid, c.token, c.identifierOrCriteria, it === 3 ? 1 : 0)
             _name = meta?.name
             _image = meta?.image
           } catch { /* ignore */ }
+        } else if (isCriteriaItem(c)) {
+          _name = 'Any token'
         }
         return { ...c, itemType: it, _name, _image }
       }))
@@ -222,9 +283,13 @@ export default function Offer() {
     setOfferApprovals(null)
     setConsiderationHoldings(null)
 
+    const { items: resolvedOffer, missing: missingOffer } = resolveCriteriaItems(params.offer, criteriaSelections.offer)
+    const { items: resolvedConsideration, missing: missingConsideration } = resolveCriteriaItems(params.consideration, criteriaSelections.consideration)
+
     // Check maker holds offered assets
-    checkHoldings(Number(chainId), params.offerer, params.offer).then((results) => {
-      if (!cancelled) setOfferHoldings(results)
+    checkHoldings(Number(chainId), params.offerer, resolvedOffer).then((results) => {
+      const withMissing = applyMissingCriteria(results, missingOffer)
+      if (!cancelled) setOfferHoldings(withMissing)
     })
 
     // Check maker has approved Seaport to transfer offered assets
@@ -239,15 +304,16 @@ export default function Offer() {
       wallet.address.toLowerCase() === takerAddr.toLowerCase()
     )
     if (isValidTaker) {
-      checkHoldings(Number(chainId), wallet.address, params.consideration).then((results) => {
-        if (!cancelled) setConsiderationHoldings(results)
+      checkHoldings(Number(chainId), wallet.address, resolvedConsideration).then((results) => {
+        const withMissing = applyMissingCriteria(results, missingConsideration)
+        if (!cancelled) setConsiderationHoldings(withMissing)
       })
     } else {
       setConsiderationHoldings(null)
     }
 
     return () => { cancelled = true }
-  }, [orderData, statusLabel, chainId, wallet])
+  }, [orderData, statusLabel, chainId, wallet, criteriaSelections])
 
   const checkVerificationAndFill = useCallback(async () => {
     if (!orderData) return
@@ -255,7 +321,7 @@ export default function Offer() {
     // Only check NFTs the taker is receiving (maker's offer items), not what they're giving
     const nftItems = params.offer.filter((item) => {
       const it = Number(item.itemType)
-      return it === 2 || it === 3
+      return it === 2 || it === 3 || it === 4 || it === 5
     })
 
     const unverified = []
@@ -264,17 +330,21 @@ export default function Offer() {
       if (v.status !== 'verified') {
         let name = null
         try {
-          const meta = await fetchMetadata(Number(chainId), item.token, item.identifierOrCriteria, Number(item.itemType) === 3 ? 1 : 0)
+          const tokenId = isCriteriaItem(item) ? criteriaSelections.offer?.[params.offer.indexOf(item)] : item.identifierOrCriteria
+          const meta = tokenId
+            ? await fetchMetadata(Number(chainId), item.token, tokenId, Number(item.itemType) === 3 || Number(item.itemType) === 5 ? 1 : 0)
+            : null
           name = meta?.name
         } catch { /* ignore */ }
         const openseaChain = { 1: 'ethereum', 8453: 'base', 137: 'matic', 57073: 'ink' }[Number(chainId)] || 'ethereum'
+        const tokenId = isCriteriaItem(item) ? criteriaSelections.offer?.[params.offer.indexOf(item)] : item.identifierOrCriteria
         unverified.push({
           token: item.token,
-          tokenId: item.identifierOrCriteria,
-          name: name || `#${item.identifierOrCriteria}`,
+          tokenId,
+          name: name || (tokenId ? `#${tokenId}` : 'Any token from collection'),
           status: v.status,
           message: v.message,
-          openseaUrl: `https://opensea.io/assets/${openseaChain}/${item.token}/${item.identifierOrCriteria}`,
+          openseaUrl: tokenId ? `https://opensea.io/assets/${openseaChain}/${item.token}/${tokenId}` : `https://opensea.io/assets/${openseaChain}/${item.token}`,
         })
       }
     }
@@ -285,7 +355,7 @@ export default function Offer() {
     } else {
       handleFill()
     }
-  }, [orderData, chainId])
+  }, [orderData, chainId, criteriaSelections])
 
   const handleFill = useCallback(async () => {
     if (!wallet || !orderData) return
@@ -338,7 +408,7 @@ export default function Offer() {
 
       const actionIndex = txSteps.length - 1
       updateStep(actionIndex, { status: 'signing' })
-      const { wait } = await fulfillOrder(wallet.provider, orderData.order)
+      const { wait } = await fulfillOrder(wallet.provider, orderData.order, criteriaSelections)
       updateStep(actionIndex, { status: 'confirming' })
       const receipt = await wait()
       updateStep(actionIndex, { status: 'done' })
@@ -425,6 +495,8 @@ export default function Offer() {
   const takerMissing = considerationHoldings && considerationHoldings.some((h) => !h.held)
   const fillabilityChecking = isOpen && (!offerHoldings || !offerApprovals)
   const fillabilityBlocked = makerMissing || makerApprovalMissing
+  const missingCriteria = hasMissingCriteria(params, criteriaSelections)
+  const duplicateERC721Criteria = hasDuplicateERC721CriteriaSelections(params, criteriaSelections)
 
   // Parse offer/consideration for display (format fungible amounts to human-readable)
   function formatAmount(item) {
@@ -442,13 +514,22 @@ export default function Offer() {
     tokenId: o.identifierOrCriteria,
     amount: formatAmount(o),
     itemType: Number(o.itemType),
+    criteriaSelection: criteriaSelections.offer?.[params.offer.indexOf(o)],
   }))
   const considerationAssets = params.consideration.map((c) => ({
     token: c.token,
     tokenId: c.identifierOrCriteria,
     amount: formatAmount(c),
     itemType: Number(c.itemType),
+    criteriaSelection: criteriaSelections.consideration?.[params.consideration.indexOf(c)],
   }))
+
+  function setCriteriaSelection(side, index, value) {
+    setCriteriaSelections((prev) => ({
+      ...prev,
+      [side]: { ...prev[side], [index]: value.trim() },
+    }))
+  }
 
   return (
     <div className="page offer-detail">
@@ -479,6 +560,9 @@ export default function Offer() {
             holdings={offerHoldings}
             approvals={offerApprovals}
             holdingsLabel="Maker"
+            criteriaSide="offer"
+            criteriaSelections={criteriaSelections.offer}
+            onCriteriaChange={setCriteriaSelection}
           />
         </div>
         <div className="offer-party">
@@ -492,7 +576,15 @@ export default function Offer() {
               </>
             )}
           </h3>
-          <AssetList assets={considerationAssets} chainId={chainId} holdings={isMaker ? null : considerationHoldings} holdingsLabel="You" />
+          <AssetList
+            assets={considerationAssets}
+            chainId={chainId}
+            holdings={isMaker ? null : considerationHoldings}
+            holdingsLabel="You"
+            criteriaSide="consideration"
+            criteriaSelections={criteriaSelections.consideration}
+            onCriteriaChange={setCriteriaSelection}
+          />
         </div>
       </div>
 
@@ -644,7 +736,7 @@ export default function Offer() {
       )}
 
       {wallet && !wrongChain && isOpen && !isExpired && isTaker && !isMaker && (() => {
-        const blocked = fillabilityChecking || fillabilityBlocked || takerMissing
+        const blocked = fillabilityChecking || fillabilityBlocked || takerMissing || missingCriteria || duplicateERC721Criteria
         return (
           <>
             {makerMissing && (
@@ -655,6 +747,12 @@ export default function Offer() {
             )}
             {takerMissing && (
               <p className="form-error">You do not hold all required assets to accept this offer.</p>
+            )}
+            {missingCriteria && (
+              <p className="form-error">Choose a token ID for each Any Token item before accepting this offer.</p>
+            )}
+            {duplicateERC721Criteria && (
+              <p className="form-error">Each ERC-721 Any Token item must use a different token ID.</p>
             )}
             <button className="btn btn-primary" onClick={checkVerificationAndFill} disabled={submitting || blocked}>
               {submitting ? 'Accepting...' : 'Accept Offer'}
@@ -700,14 +798,25 @@ export default function Offer() {
   )
 }
 
-function AssetList({ assets, chainId, holdings, approvals, holdingsLabel }) {
+function AssetList({ assets, chainId, holdings, approvals, holdingsLabel, criteriaSide, criteriaSelections, onCriteriaChange }) {
   return (
     <div className="asset-list">
       {assets.map((asset, i) => (
         <div key={i}>
           <AssetCard asset={asset} chainId={Number(chainId)} compact={false} />
+          {isCriteriaItem(asset) && (
+            <label className="criteria-resolver">
+              <span>{criteriaSide === 'offer' ? 'Token ID to receive' : 'Token ID to send'}</span>
+              <input
+                type="text"
+                value={criteriaSelections?.[i] || ''}
+                onChange={(e) => onCriteriaChange?.(criteriaSide, i, e.target.value)}
+                placeholder="Token ID"
+              />
+            </label>
+          )}
           {holdings && !holdings[i]?.held && (
-            <p className="asset-missing">{holdingsLabel} {holdingsLabel === 'You' ? 'do' : 'does'} not hold this asset</p>
+            <p className="asset-missing">{holdings[i]?.reason === 'Choose token ID' ? 'Choose a token ID for this item' : `${holdingsLabel} ${holdingsLabel === 'You' ? 'do' : 'does'} not hold this asset`}</p>
           )}
           {approvals && !approvals[i]?.approved && (
             <p className="asset-missing">{holdingsLabel} has not approved Seaport for this asset</p>
