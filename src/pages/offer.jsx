@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useOutletContext } from 'react-router'
 import { getOrderFromTx, getOrderStatus, getCounter, fulfillOrder, cancelOrder, ensureApproval, deriveOrderStatus, getFillTxHash } from '../lib/contract'
-import { checkHoldings } from '../lib/balances'
+import { checkHoldings, checkSeaportApprovals } from '../lib/asset-checks'
 import { getVerificationStatus } from '../lib/verification'
 import { fetchMetadata } from '../lib/metadata'
 import { resolveENS } from '../lib/ens'
@@ -14,21 +14,15 @@ import { WHITELISTED_ERC20, CHAINS } from '../lib/constants'
 import { ItemType } from '@opensea/seaport-js/lib/constants'
 import { formatUnits } from 'ethers'
 import { formatTokenAmount } from '../lib/wallet'
+import { friendlyContractError } from '../lib/errors'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
-// Known Seaport/Zone error selectors
-const KNOWN_ERRORS = {
-  '0x82b42900': 'You are not the authorized taker for this offer.',
-  '0x98d4901c': 'This order has been cancelled.',
-}
-
 function friendlyFillError(err) {
+  const contractMsg = friendlyContractError(err)
+  if (contractMsg) return contractMsg
+
   const raw = err.data || err.message || ''
-  // Check for known error selectors
-  for (const [selector, msg] of Object.entries(KNOWN_ERRORS)) {
-    if (raw.includes(selector)) return msg
-  }
   // Seaport reverts with generic data when token transfers fail
   if (raw.includes('execution reverted') || err.code === 'CALL_EXCEPTION') {
     return 'This offer cannot be accepted. The maker may no longer hold the offered assets, or approvals may have been revoked.'
@@ -57,6 +51,7 @@ export default function Offer() {
   const [submitting, setSubmitting] = useState(false)
   const [copied, setCopied] = useState(false)
   const [offerHoldings, setOfferHoldings] = useState(null) // array parallel to offer items
+  const [offerApprovals, setOfferApprovals] = useState(null) // array parallel to offer items
   const [considerationHoldings, setConsiderationHoldings] = useState(null) // array parallel to consideration items
   const [showVerifyModal, setShowVerifyModal] = useState(false)
   const [unverifiedAssets, setUnverifiedAssets] = useState([])
@@ -223,10 +218,18 @@ export default function Offer() {
     if (!orderData || statusLabel !== 'open') return
     let cancelled = false
     const params = orderData.order.parameters
+    setOfferHoldings(null)
+    setOfferApprovals(null)
+    setConsiderationHoldings(null)
 
     // Check maker holds offered assets
     checkHoldings(Number(chainId), params.offerer, params.offer).then((results) => {
       if (!cancelled) setOfferHoldings(results)
+    })
+
+    // Check maker has approved Seaport to transfer offered assets
+    checkSeaportApprovals(Number(chainId), params.offerer, params.offer).then((results) => {
+      if (!cancelled) setOfferApprovals(results)
     })
 
     // Check taker holds consideration assets (only if wallet is the valid taker)
@@ -417,6 +420,11 @@ export default function Offer() {
   const isRestricted = taker !== ZERO_ADDRESS
   const wrongTaker = wallet && isRestricted && !isTaker
   const wrongChain = wallet && wallet.chainId !== Number(chainId)
+  const makerMissing = offerHoldings && offerHoldings.some((h) => !h.held)
+  const makerApprovalMissing = offerApprovals && offerApprovals.some((a) => !a.approved)
+  const takerMissing = considerationHoldings && considerationHoldings.some((h) => !h.held)
+  const fillabilityChecking = isOpen && (!offerHoldings || !offerApprovals)
+  const fillabilityBlocked = makerMissing || makerApprovalMissing
 
   // Parse offer/consideration for display (format fungible amounts to human-readable)
   function formatAmount(item) {
@@ -465,7 +473,13 @@ export default function Offer() {
             From <AddressDisplay address={maker} chainId={Number(chainId)} />
             {isMaker && <span className="you-badge">you</span>}
           </h3>
-          <AssetList assets={offerAssets} chainId={chainId} holdings={offerHoldings} holdingsLabel="Maker" />
+          <AssetList
+            assets={offerAssets}
+            chainId={chainId}
+            holdings={offerHoldings}
+            approvals={offerApprovals}
+            holdingsLabel="Maker"
+          />
         </div>
         <div className="offer-party">
           <h3 className="party-address">
@@ -481,6 +495,27 @@ export default function Offer() {
           <AssetList assets={considerationAssets} chainId={chainId} holdings={isMaker ? null : considerationHoldings} holdingsLabel="You" />
         </div>
       </div>
+
+      {isOpen && (
+        <div className={`fillability-panel${fillabilityBlocked ? ' fillability-panel-blocked' : ''}`}>
+          <p>
+            <span className="meta-label">Can be accepted:</span>{' '}
+            {fillabilityChecking ? (
+              <span>Checking...</span>
+            ) : fillabilityBlocked ? (
+              <strong>No</strong>
+            ) : (
+              <strong>Yes</strong>
+            )}
+          </p>
+          {!fillabilityChecking && makerMissing && (
+            <p>The maker no longer holds all offered assets.</p>
+          )}
+          {!fillabilityChecking && makerApprovalMissing && (
+            <p>The maker has not approved Seaport to transfer all offered assets.</p>
+          )}
+        </div>
+      )}
 
       <div className="offer-meta">
         {statusLabel === 'open' && params.endTime && Number(params.endTime) > 0 && (() => {
@@ -609,13 +644,14 @@ export default function Offer() {
       )}
 
       {wallet && !wrongChain && isOpen && !isExpired && isTaker && !isMaker && (() => {
-        const makerMissing = offerHoldings && offerHoldings.some((h) => !h.held)
-        const takerMissing = considerationHoldings && considerationHoldings.some((h) => !h.held)
-        const blocked = makerMissing || takerMissing
+        const blocked = fillabilityChecking || fillabilityBlocked || takerMissing
         return (
           <>
             {makerMissing && (
               <p className="form-error">This offer cannot be accepted — the maker no longer holds all offered assets.</p>
+            )}
+            {makerApprovalMissing && (
+              <p className="form-error">This offer cannot be accepted — the maker has not approved Seaport to transfer all offered assets.</p>
             )}
             {takerMissing && (
               <p className="form-error">You do not hold all required assets to accept this offer.</p>
@@ -664,7 +700,7 @@ export default function Offer() {
   )
 }
 
-function AssetList({ assets, chainId, holdings, holdingsLabel }) {
+function AssetList({ assets, chainId, holdings, approvals, holdingsLabel }) {
   return (
     <div className="asset-list">
       {assets.map((asset, i) => (
@@ -672,6 +708,9 @@ function AssetList({ assets, chainId, holdings, holdingsLabel }) {
           <AssetCard asset={asset} chainId={Number(chainId)} compact={false} />
           {holdings && !holdings[i]?.held && (
             <p className="asset-missing">{holdingsLabel} {holdingsLabel === 'You' ? 'do' : 'does'} not hold this asset</p>
+          )}
+          {approvals && !approvals[i]?.approved && (
+            <p className="asset-missing">{holdingsLabel} has not approved Seaport for this asset</p>
           )}
         </div>
       ))}

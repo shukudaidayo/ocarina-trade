@@ -5,6 +5,7 @@ import { ZONE_ADDRESSES, WHITELISTED_ERC20, CHAINS } from '../../lib/constants'
 import { parseUnits } from 'ethers'
 import TxChecklist, { buildSteps } from '../tx-checklist'
 import AssetTally from './asset-tally'
+import { friendlyContractError } from '../../lib/errors'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
@@ -16,6 +17,9 @@ function friendlyError(err) {
   if (msg.includes('insufficient funds') || msg.includes('insufficient balance')) {
     return 'Insufficient funds for gas.'
   }
+  const contractMsg = friendlyContractError(err)
+  if (contractMsg) return contractMsg
+
   return err?.reason || err?.shortMessage || 'Transaction failed.'
 }
 

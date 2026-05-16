@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useOutletContext, useSearchParams } from 'react-router'
 import { queryOrderEvents, getOrderStatus, getCounter, deriveOrderStatus } from '../lib/contract'
-import { checkHoldings } from '../lib/balances'
 import { fetchMetadata } from '../lib/metadata'
 import { resolveENSName } from '../lib/ens'
 import AddressDisplay from '../components/address-display'
@@ -152,42 +151,6 @@ export default function Offers() {
     return () => { cancelled = true }
   }, [])
 
-  // Check maker holdings for open offers
-  useEffect(() => {
-    const openOrders = orders.filter((o) => o.status === 'open' && o.order?.parameters)
-    if (openOrders.length === 0) return
-
-    let cancelled = false
-
-    ;(async () => {
-      const BATCH = 5
-      const checks = []
-      for (let i = 0; i < openOrders.length; i += BATCH) {
-        if (cancelled) return
-        const batch = openOrders.slice(i, i + BATCH)
-        const results = await Promise.all(
-          batch.map(async (o) => {
-            const results = await checkHoldings(o.chainId, o.maker, o.order.parameters.offer)
-            return { orderHash: o.orderHash, makerHoldsAll: results.every((h) => h.held) }
-          })
-        )
-        checks.push(...results)
-      }
-      return checks
-    })().then((checks) => {
-      if (!checks) return
-      if (cancelled) return
-      const holdingsMap = {}
-      for (const c of checks) holdingsMap[c.orderHash] = c.makerHoldsAll
-      setOrders((prev) => prev.map((o) => ({
-        ...o,
-        makerHoldsAll: holdingsMap[o.orderHash] ?? true,
-      })))
-    })
-
-    return () => { cancelled = true }
-  }, [orders.length]) // re-run when orders finish loading
-
   // Reset pagination when filters change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
@@ -226,11 +189,8 @@ export default function Offers() {
   })
 
   if (category === 'open') {
-    // Sort: valid first, then by soonest expiration
+    // Sort open offers by soonest expiration
     filtered.sort((a, b) => {
-      const aValid = a.makerHoldsAll !== false ? 1 : 0
-      const bValid = b.makerHoldsAll !== false ? 1 : 0
-      if (aValid !== bValid) return bValid - aValid
       const aEnd = Number(a.order?.parameters?.endTime || 0)
       const bEnd = Number(b.order?.parameters?.endTime || 0)
       if (!aEnd && !bEnd) return 0
@@ -317,7 +277,7 @@ export default function Offers() {
       {!loading && visible.length > 0 && (
         <div className="offers-list">
           {visible.map((order) => (
-            <OfferCard key={order.orderHash} order={order} invalidHoldings={order.makerHoldsAll === false} />
+            <OfferCard key={order.orderHash} order={order} />
           ))}
         </div>
       )}
@@ -346,13 +306,13 @@ const TOKEN_LOGOS = {
   EURC: new URL('../assets/tokens/eurc.png', import.meta.url).href,
 }
 
-function OfferCard({ order, invalidHoldings }) {
+function OfferCard({ order }) {
   const { chainId } = order
   const offerUrl = `/offer/${chainId}/${order.transactionHash}`
   const params = order.order?.parameters
 
   return (
-    <Link to={offerUrl} className={`offer-card${invalidHoldings ? ' offer-card-invalid' : ''}`}>
+    <Link to={offerUrl} className="offer-card">
       <div className="offer-card-side">
         <div className="offer-card-from">
           From <AddressDisplay address={order.maker} chainId={chainId} asSpan />
@@ -374,9 +334,6 @@ function OfferCard({ order, invalidHoldings }) {
         <span className={`status-badge status-${order.status}`}>
           {order.status}
         </span>
-        {invalidHoldings && (
-          <span className="offer-card-warning">Maker no longer holds assets</span>
-        )}
       </div>
     </Link>
   )

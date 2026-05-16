@@ -358,6 +358,23 @@ footer {
   margin: 0.2rem 0 0.4rem 0.5rem;
 }
 
+.fillability-panel {
+  border: 1px solid var(--border);
+  border-left: 3px solid #4c4;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+  background: var(--bg-surface);
+}
+
+.fillability-panel-blocked {
+  border-left-color: #e55;
+}
+
+.fillability-panel p {
+  margin: 0.2rem 0;
+}
+
 /* Asset card */
 .asset-card {
   display: flex;
@@ -1137,21 +1154,6 @@ footer {
 .offer-card:hover {
   border-color: var(--accent);
   text-decoration: none;
-}
-
-.offer-card-invalid {
-  opacity: 0.5;
-}
-
-.offer-card-invalid:hover {
-  border-color: var(--border);
-}
-
-.offer-card-warning {
-  display: block;
-  font-size: 0.7rem;
-  color: #e55;
-  margin-top: 0.3rem;
 }
 
 .offer-memo {
