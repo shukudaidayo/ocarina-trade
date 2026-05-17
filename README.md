@@ -9,6 +9,7 @@ Peer-to-peer OTC trades for NFTs and tokens. No backend, no accounts, no middlem
 - **Create an offer** — Select the assets you want to trade (exact ERC-721/ERC-1155 tokens, collection-wide Any Token NFT criteria, whitelisted ERC-20, or ETH on the taker side), optionally restrict to a specific taker, sign the order, and publish it on-chain. A shareable link is generated.
 - **View an offer** — Anyone with the link can see both sides of the trade, verify the assets on Etherscan, and check the order status (open, filled, cancelled, expired).
 - **Accept an offer** — The eligible taker approves their assets, resolves any Any Token items to concrete token IDs, and executes the atomic trade in a single transaction. Both sides exchange assets simultaneously — no escrow, no partial fills.
+- **Preflight checks** — Before publication, the app rechecks maker holdings and Seaport approvals for exact offered assets. Before acceptance, it simulates the exact Seaport fill after taker approvals and before the final transaction.
 
 ## How it works
 
@@ -44,6 +45,7 @@ For NFT contracts, an offer or consideration item can target **Any Token** from 
 - **No backend** — all state is on-chain or in the URL. Nothing to maintain, no servers to trust.
 - **No database** — order publication and discovery are powered by on-chain events.
 - **No escrow** — assets remain in your wallet until the atomic trade.
+- **Preflight safety** — the frontend warns on suspicious NFT signals and checks holdings, approvals, and fillability before users submit the irreversible transaction.
 - **Audited settlement** — Seaport has been professionally audited and has processed billions in volume.
 - **Open source** — fork it, verify it, run your own.
 

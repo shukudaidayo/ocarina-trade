@@ -1,8 +1,9 @@
 import { truncateAddress } from '../lib/wallet'
 
-// status: 'pending' | 'signing' | 'confirming' | 'done' | 'failed'
+// status: 'pending' | 'checking' | 'signing' | 'confirming' | 'done' | 'failed'
 const STATUS_ICONS = {
   pending: '\u25cb',    // ○
+  checking: '\u25cf',   // ●
   signing: '\u25cf',    // ●
   confirming: '\u25cf', // ●
   done: '\u2713',       // ✓
@@ -11,6 +12,7 @@ const STATUS_ICONS = {
 
 const STATUS_LABELS = {
   pending: 'Waiting',
+  checking: 'Checking...',
   signing: 'Sign in wallet...',
   confirming: 'Confirming...',
   done: 'Done',

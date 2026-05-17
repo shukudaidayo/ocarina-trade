@@ -5,6 +5,7 @@ import { CHAINS, SEAPORT_ADDRESS, ZONE_ADDRESSES, ZONE_DEPLOY_BLOCKS, ZONE_ABI, 
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const SEAPORT_FULFILL_ABI = [
+  'function fulfillOrder((tuple(address offerer,address zone,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)[] offer,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 totalOriginalConsiderationItems) parameters,bytes signature) order,bytes32 fulfillerConduitKey) payable returns (bool fulfilled)',
   'function fulfillAdvancedOrder((tuple(address offerer,address zone,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)[] offer,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 totalOriginalConsiderationItems) parameters,bytes signature,bytes extraData,uint120 numerator,uint120 denominator) advancedOrder,tuple(uint256 orderIndex,uint8 side,uint256 index,uint256 identifier,bytes32[] criteriaProof)[] criteriaResolvers,bytes32 fulfillerConduitKey,address recipient) payable returns (bool fulfilled)',
 ]
 
@@ -386,21 +387,50 @@ function nativeConsiderationValue(order) {
   ), 0n)
 }
 
+function advancedOrderFromOrder(order) {
+  return {
+    parameters: order.parameters,
+    signature: order.signature,
+    extraData: '0x',
+    numerator: 1,
+    denominator: 1,
+  }
+}
+
+/**
+ * Simulate the exact Seaport fill transaction from the connected wallet.
+ * Run after needed approvals are in place; otherwise the simulation will fail
+ * for missing taker approval rather than collection transfer policy.
+ */
+export async function simulateFulfillment(rawProvider, order, criteriaSelections = null) {
+  const signer = await getSigner(rawProvider)
+  const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
+  const value = nativeConsiderationValue(order)
+
+  if (criteriaSelections) {
+    const criteriaResolvers = buildCriteriaResolvers(order, criteriaSelections)
+    if (criteriaResolvers.length > 0) {
+      return seaport.fulfillAdvancedOrder.staticCall(
+        advancedOrderFromOrder(order),
+        criteriaResolvers,
+        ZeroHash,
+        ZeroAddress,
+        { value }
+      )
+    }
+  }
+
+  return seaport.fulfillOrder.staticCall(order, ZeroHash, { value })
+}
+
 export async function fulfillOrder(rawProvider, order, criteriaSelections = null) {
   if (criteriaSelections) {
     const criteriaResolvers = buildCriteriaResolvers(order, criteriaSelections)
     if (criteriaResolvers.length > 0) {
       const signer = await getSigner(rawProvider)
       const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
-      const advancedOrder = {
-        parameters: order.parameters,
-        signature: order.signature,
-        extraData: '0x',
-        numerator: 1,
-        denominator: 1,
-      }
       const tx = await seaport.fulfillAdvancedOrder(
-        advancedOrder,
+        advancedOrderFromOrder(order),
         criteriaResolvers,
         ZeroHash,
         ZeroAddress,
@@ -409,9 +439,9 @@ export async function fulfillOrder(rawProvider, order, criteriaSelections = null
       return { tx, wait: () => tx.wait() }
     }
   }
-  const seaport = await getSeaport(rawProvider)
-  const { executeAllActions } = await seaport.fulfillOrder({ order })
-  const tx = await executeAllActions()
+  const signer = await getSigner(rawProvider)
+  const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
+  const tx = await seaport.fulfillOrder(order, ZeroHash, { value: nativeConsiderationValue(order) })
   return { tx, wait: () => tx.wait() }
 }
 

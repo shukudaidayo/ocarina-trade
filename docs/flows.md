@@ -16,6 +16,10 @@ sequenceDiagram
     W->>S: Approval tx (per collection)
     S-->>F: Confirmed
 
+    F->>F: Check offered exact assets are still held
+    F->>F: Check Seaport approvals are visible onchain
+    Note over F: Maker-side criteria items are approval-checked only;<br/>ownership depends on token ID chosen at fulfillment
+
     F->>W: EIP-712 sign Seaport order (no gas)
     W-->>F: Signed Seaport order { parameters, signature }
 
@@ -40,9 +44,9 @@ sequenceDiagram
     Note over Z: ERC-721 criteria items must have amount 1;<br/>multiple Any ERC-721s are separate criteria items
     Note over Z: ERC-165 validation also probes 0xffffffff<br/>to reject permissive responders
     Z->>Z: orderHash = ISeaport.getOrderHash(components) (delegates to Seaport)
-    Z->>Z: Check !registered[orderHash][maker]
+    Z->>Z: Check !registered[orderHash]
     Note over Z: registered is both duplicate-publication guard<br/>and settlement allowlist
-    Z->>Z: registered[orderHash][maker] = true (CEI before signature check)
+    Z->>Z: registered[orderHash] = true (CEI before signature check)
     Z->>Z: Verify registration signature (ECDSA or EIP-1271) against OTCRegistry domain
     Z->>S: validate([{ parameters, seaportSignature }])
     S-->>Z: true or revert
@@ -102,10 +106,17 @@ sequenceDiagram
     S-->>F: Confirmed
 
     alt Exact-item order
-        F->>W: fulfillOrder(signedOrder)
+        F->>S: fulfillOrder.staticCall(order, bytes32(0))
+    else Criteria order
+        F->>S: fulfillAdvancedOrder.staticCall(advancedOrder, criteriaResolvers, bytes32(0), address(0))
+    end
+    S-->>F: Simulation succeeds or reverts before final tx
+
+    alt Exact-item order
+        F->>W: fulfillOrder(order, bytes32(0))
         W->>S: fulfillOrder tx
     else Criteria order
-        F->>W: fulfillAdvancedOrder(advancedOrder, criteriaResolvers)
+        F->>W: fulfillAdvancedOrder(advancedOrder, criteriaResolvers, bytes32(0), address(0))
         W->>S: fulfillAdvancedOrder tx
     end
 
@@ -120,7 +131,7 @@ sequenceDiagram
 
     S->>Z: validateOrder(zoneParameters)
     Z->>Z: Require msg.sender == seaport
-    Z->>Z: Require registered[orderHash][offerer]
+    Z->>Z: Require registered[orderHash]
     Z->>Z: Recheck ERC-20 whitelist
     Z-->>S: selector (valid)
 

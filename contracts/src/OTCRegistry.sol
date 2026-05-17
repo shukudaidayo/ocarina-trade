@@ -27,9 +27,9 @@ struct OrderRegistration {
 contract OTCRegistry is ZoneInterface, EIP712 {
     address[] private whitelistedTokens;
     mapping(address => bool) public whitelistedERC20;
-    // Keyed by (orderHash, maker). Used both to block duplicate publication and
-    // as the settlement allowlist checked by validateOrder.
-    mapping(bytes32 => mapping(address => bool)) public registered;
+    // Keyed by Seaport order hash, which commits to the maker via offerer.
+    // Used both to block duplicate publication and as the settlement allowlist.
+    mapping(bytes32 => bool) public registered;
     address public immutable seaport;
 
     uint256 public constant MAX_MEMO_LENGTH = 280;
@@ -40,9 +40,6 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     // front-runner from substituting a bad Seaport sig using the maker's reg sig.
     bytes32 private constant _REGISTRATION_TYPEHASH =
         keccak256("OrderRegistration(bytes32 orderHash,bytes seaportSignature,string memo)");
-    bytes4 private constant _INTERFACE_ID_ERC5192 = 0xb45a3c0e;
-    bytes4 private constant _INTERFACE_ID_ERC5484 = 0x0489b56f;
-    bytes4 private constant _INTERFACE_ID_ERC6454 = 0x91a6262f;
 
     error OnlySeaport(address caller);
     error UnauthorizedTaker(address fulfiller, address allowedTaker);
@@ -73,7 +70,6 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     error DuplicateWhitelistToken(address token);
     error EmptyOffer();
     error EmptyConsideration();
-    error TransferRestrictedToken(address token, bytes4 restriction);
 
     event OrderRegistered(
         bytes32 indexed orderHash, address indexed maker, address indexed taker, OrderComponents components, string memo
@@ -82,10 +78,14 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     constructor(address[] memory _tokens, address _seaport) {
         if (_seaport == address(0) || _seaport.code.length == 0) revert InvalidSeaport(_seaport);
         whitelistedTokens = _tokens;
-        for (uint256 i = 0; i < _tokens.length; i++) {
+        uint256 tokenCount = _tokens.length;
+        for (uint256 i = 0; i < tokenCount;) {
             if (_tokens[i] == address(0)) revert InvalidWhitelistToken(_tokens[i]);
             if (whitelistedERC20[_tokens[i]]) revert DuplicateWhitelistToken(_tokens[i]);
             whitelistedERC20[_tokens[i]] = true;
+            unchecked {
+                ++i;
+            }
         }
         seaport = _seaport;
     }
@@ -128,15 +128,17 @@ contract OTCRegistry is ZoneInterface, EIP712 {
             revert WrongOrderType(reg.components.orderType, OrderType.FULL_RESTRICTED);
         }
         if (reg.components.conduitKey != bytes32(0)) revert InvalidConduitKey(reg.components.conduitKey);
-        if (reg.components.offer.length == 0) revert EmptyOffer();
-        if (reg.components.consideration.length == 0) revert EmptyConsideration();
+        uint256 offerCount = reg.components.offer.length;
+        uint256 considerationCount = reg.components.consideration.length;
+        if (offerCount == 0) revert EmptyOffer();
+        if (considerationCount == 0) revert EmptyConsideration();
         _checkZoneHash(reg.components.zoneHash);
         uint256 currentCounter = SeaportInterface(seaport).getCounter(reg.components.offerer);
         if (reg.components.counter != currentCounter) {
             revert InvalidCounter(reg.components.counter, currentCounter);
         }
 
-        for (uint256 i = 0; i < reg.components.offer.length; i++) {
+        for (uint256 i = 0; i < offerCount;) {
             if (reg.components.offer[i].itemType == ItemType.NATIVE) {
                 revert InvalidNativeOfferItem(
                     reg.components.offer[i].token,
@@ -151,8 +153,11 @@ contract OTCRegistry is ZoneInterface, EIP712 {
                 reg.components.offer[i].identifierOrCriteria,
                 reg.components.offer[i].startAmount
             );
+            unchecked {
+                ++i;
+            }
         }
-        for (uint256 i = 0; i < reg.components.consideration.length; i++) {
+        for (uint256 i = 0; i < considerationCount;) {
             _checkRecipient(reg.components.consideration[i].recipient, reg.components.offerer);
             _checkFixedAmount(reg.components.consideration[i].startAmount, reg.components.consideration[i].endAmount);
             _checkItem(
@@ -161,18 +166,21 @@ contract OTCRegistry is ZoneInterface, EIP712 {
                 reg.components.consideration[i].identifierOrCriteria,
                 reg.components.consideration[i].startAmount
             );
+            unchecked {
+                ++i;
+            }
         }
 
         // Delegate hash derivation to the immutable Seaport contract.
         bytes32 orderHash = SeaportInterface(seaport).getOrderHash(reg.components);
         address maker = reg.components.offerer;
 
-        if (registered[orderHash][maker]) revert AlreadyRegistered(orderHash, maker);
+        if (registered[orderHash]) revert AlreadyRegistered(orderHash, maker);
 
         // Effect before interaction: setting the slot before the signature check
         // closes an ERC-1271 reentrancy loophole where a malicious maker contract
         // could re-enter during signature validation and emit duplicate events.
-        registered[orderHash][maker] = true;
+        registered[orderHash] = true;
 
         bytes32 structHash = keccak256(
             abi.encode(_REGISTRATION_TYPEHASH, orderHash, keccak256(reg.seaportSignature), keccak256(bytes(reg.memo)))
@@ -199,7 +207,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
                 zoneHash: reg.components.zoneHash,
                 salt: reg.components.salt,
                 conduitKey: reg.components.conduitKey,
-                totalOriginalConsiderationItems: reg.components.consideration.length
+                totalOriginalConsiderationItems: considerationCount
             }),
             signature: reg.seaportSignature
         });
@@ -224,16 +232,24 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     /// @notice Called by Seaport after token transfers. Enforces prior registration and ERC-20 policy.
     function validateOrder(ZoneParameters calldata zoneParameters) external view returns (bytes4) {
         if (msg.sender != seaport) revert OnlySeaport(msg.sender);
-        if (!registered[zoneParameters.orderHash][zoneParameters.offerer]) {
+        if (!registered[zoneParameters.orderHash]) {
             revert OrderNotRegistered(zoneParameters.orderHash, zoneParameters.offerer);
         }
 
-        for (uint256 i = 0; i < zoneParameters.offer.length; i++) {
+        uint256 offerCount = zoneParameters.offer.length;
+        for (uint256 i = 0; i < offerCount;) {
             _checkERC20Whitelist(zoneParameters.offer[i].itemType, zoneParameters.offer[i].token);
+            unchecked {
+                ++i;
+            }
         }
 
-        for (uint256 i = 0; i < zoneParameters.consideration.length; i++) {
+        uint256 considerationCount = zoneParameters.consideration.length;
+        for (uint256 i = 0; i < considerationCount;) {
             _checkERC20Whitelist(zoneParameters.consideration[i].itemType, zoneParameters.consideration[i].token);
+            unchecked {
+                ++i;
+            }
         }
 
         return this.validateOrder.selector;
@@ -285,7 +301,6 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         if (itemType == ItemType.ERC721 || itemType == ItemType.ERC721_WITH_CRITERIA) {
             if (amount != 1) revert InvalidERC721Amount(amount);
             _checkSupportsInterface(token, 0x80ac58cd);
-            _checkERC721TransferRestrictions(token, identifier, itemType == ItemType.ERC721_WITH_CRITERIA);
         } else if (itemType == ItemType.ERC1155 || itemType == ItemType.ERC1155_WITH_CRITERIA) {
             _checkSupportsInterface(token, 0xd9b67a26);
         } else {
@@ -303,41 +318,5 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         } catch {}
 
         revert InvalidTokenStandard(token, interfaceId);
-    }
-
-    function _checkERC721TransferRestrictions(address token, uint256 identifier, bool criteriaBased) internal view {
-        if (_supportsOptionalInterface(token, _INTERFACE_ID_ERC5484)) {
-            revert TransferRestrictedToken(token, _INTERFACE_ID_ERC5484);
-        }
-
-        if (_supportsOptionalInterface(token, _INTERFACE_ID_ERC5192)) {
-            if (!criteriaBased) {
-                (bool ok, bytes memory data) = token.staticcall(abi.encodeWithSignature("locked(uint256)", identifier));
-                if (ok && data.length >= 32 && abi.decode(data, (bool))) {
-                    revert TransferRestrictedToken(token, _INTERFACE_ID_ERC5192);
-                }
-            }
-        }
-
-        if (_supportsOptionalInterface(token, _INTERFACE_ID_ERC6454)) {
-            if (!criteriaBased) {
-                (bool ok, bytes memory data) = token.staticcall(
-                    abi.encodeWithSignature(
-                        "isTransferable(uint256,address,address)", identifier, address(0), address(0)
-                    )
-                );
-                if (ok && data.length >= 32 && !abi.decode(data, (bool))) {
-                    revert TransferRestrictedToken(token, _INTERFACE_ID_ERC6454);
-                }
-            }
-        }
-    }
-
-    function _supportsOptionalInterface(address token, bytes4 interfaceId) internal view returns (bool) {
-        try IERC165(token).supportsInterface(interfaceId) returns (bool supported) {
-            return supported;
-        } catch {}
-
-        return false;
     }
 }

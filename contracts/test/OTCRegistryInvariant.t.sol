@@ -86,7 +86,7 @@ contract OTCRegistryInvariantHandler is Test {
         zone.registerOrder(reg);
         seenRegistered[orderHash] = true;
         registeredHashes.push(orderHash);
-        assertTrue(zone.registered(orderHash, maker));
+        assertTrue(zone.registered(orderHash));
     }
 
     function failedRegistrationDoesNotConsumeSlot(uint96 salt, address taker, uint256 badPk) external {
@@ -100,7 +100,7 @@ contract OTCRegistryInvariantHandler is Test {
         OrderRegistration memory reg = _signedReg(components, badPk);
         vm.expectRevert(OTCRegistry.InvalidSignature.selector);
         zone.registerOrder(reg);
-        assertFalse(zone.registered(orderHash, maker));
+        assertFalse(zone.registered(orderHash));
     }
 
     function staleCounterDoesNotConsumeSlot(uint96 salt, address taker, uint32 currentCounter) external {
@@ -115,7 +115,7 @@ contract OTCRegistryInvariantHandler is Test {
 
         vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidCounter.selector, providedCounter, currentCounter));
         zone.registerOrder(reg);
-        assertFalse(zone.registered(orderHash, maker));
+        assertFalse(zone.registered(orderHash));
         seaport.setCounter(maker, 0);
     }
 
@@ -254,7 +254,7 @@ contract OTCRegistryInvariantTest is Test {
         uint256 count = handler.registeredCount();
         for (uint256 i = 0; i < count; i++) {
             bytes32 orderHash = handler.registeredHashAt(i);
-            assertTrue(zone.registered(orderHash, vm.addr(MAKER_PK)));
+            assertTrue(zone.registered(orderHash));
         }
     }
 }

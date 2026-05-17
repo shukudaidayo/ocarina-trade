@@ -30,7 +30,6 @@ const OTC_ERROR_INTERFACE = new Interface([
   'error DuplicateWhitelistToken(address token)',
   'error EmptyOffer()',
   'error EmptyConsideration()',
-  'error TransferRestrictedToken(address token,bytes4 restriction)',
 ])
 
 const LEGACY_SELECTOR_MESSAGES = {
@@ -52,12 +51,6 @@ const ORDER_TYPES = {
   1: 'PARTIAL_OPEN',
   2: 'FULL_RESTRICTED',
   3: 'PARTIAL_RESTRICTED',
-}
-
-const RESTRICTIONS = {
-  '0xb45a3c0e': 'ERC-5192 locked',
-  '0x0489b56f': 'ERC-5484 soulbound',
-  '0x91a6262f': 'ERC-6454 non-transferable',
 }
 
 function shortAddress(address) {
@@ -178,10 +171,6 @@ export function friendlyContractError(err) {
         return 'The offer side cannot be empty.'
       case 'EmptyConsideration':
         return 'The requested side cannot be empty.'
-      case 'TransferRestrictedToken': {
-        const restriction = RESTRICTIONS[String(args.restriction).toLowerCase()] || 'non-transferable'
-        return `This offer contains a ${restriction} NFT: ${shortAddress(args.token)}.`
-      }
       default:
         return null
     }

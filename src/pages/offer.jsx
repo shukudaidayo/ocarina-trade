@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useOutletContext } from 'react-router'
-import { getOrderFromTx, getOrderStatus, getCounter, fulfillOrder, cancelOrder, ensureApproval, deriveOrderStatus, getFillTxHash } from '../lib/contract'
+import { getOrderFromTx, getOrderStatus, getCounter, fulfillOrder, cancelOrder, ensureApproval, simulateFulfillment, deriveOrderStatus, getFillTxHash } from '../lib/contract'
 import { checkHoldings, checkSeaportApprovals } from '../lib/asset-checks'
 import { getVerificationStatus } from '../lib/verification'
 import { fetchMetadata } from '../lib/metadata'
@@ -377,7 +377,7 @@ export default function Offer() {
       }
     })
 
-    const txSteps = buildSteps(takerAssets, 'Accept Offer')
+    const txSteps = buildSteps(takerAssets, 'Check Fillability', 'Accept Offer')
     setSteps(txSteps)
 
     function updateStep(index, update) {
@@ -406,7 +406,12 @@ export default function Offer() {
         updateStep(stepIndex, { status: 'done' })
       }
 
-      const actionIndex = txSteps.length - 1
+      const simulationIndex = txSteps.findIndex((s) => s.label === 'Check Fillability')
+      updateStep(simulationIndex, { status: 'checking' })
+      await simulateFulfillment(wallet.provider, orderData.order, criteriaSelections)
+      updateStep(simulationIndex, { status: 'done' })
+
+      const actionIndex = txSteps.findIndex((s) => s.label === 'Accept Offer')
       updateStep(actionIndex, { status: 'signing' })
       const { wait } = await fulfillOrder(wallet.provider, orderData.order, criteriaSelections)
       updateStep(actionIndex, { status: 'confirming' })
@@ -418,7 +423,7 @@ export default function Offer() {
     } catch (err) {
       console.error(err)
       const msg = friendlyFillError(err)
-      const failedIndex = txSteps.findIndex((s) => s.status === 'signing' || s.status === 'confirming')
+      const failedIndex = txSteps.findIndex((s) => s.status === 'checking' || s.status === 'signing' || s.status === 'confirming')
       if (failedIndex !== -1) {
         updateStep(failedIndex, { status: 'failed', error: msg })
       }
@@ -426,7 +431,7 @@ export default function Offer() {
     } finally {
       setSubmitting(false)
     }
-  }, [wallet, orderData])
+  }, [wallet, orderData, criteriaSelections])
 
   const handleCancel = useCallback(async () => {
     if (!wallet || !orderData) return

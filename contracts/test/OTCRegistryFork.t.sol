@@ -83,7 +83,7 @@ contract OTCRegistryForkTest is Test {
         bytes32 orderHash = seaport.getOrderHash(components);
 
         zone.registerOrder(_registration(components, orderHash, seaportSignature, ""));
-        assertTrue(zone.registered(orderHash, maker));
+        assertTrue(zone.registered(orderHash));
 
         vm.prank(taker);
         bool fulfilled = seaport.fulfillOrder(_order(components, ""), bytes32(0));
@@ -147,7 +147,7 @@ contract OTCRegistryForkTest is Test {
 
         bytes memory garbageSeaportSignature = hex"badbad";
         zone.registerOrder(_registration(components, orderHash, garbageSeaportSignature, ""));
-        assertTrue(zone.registered(orderHash, maker));
+        assertTrue(zone.registered(orderHash));
     }
 
     function _buildComponents(uint256 salt, address allowedTaker) internal view returns (OrderComponents memory) {

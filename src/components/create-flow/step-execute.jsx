@@ -1,13 +1,43 @@
 import { useState, useEffect, useRef } from 'react'
 import { useCreateFlow } from './context'
 import { ensureApproval, createOrder } from '../../lib/contract'
+import { checkHoldings, checkSeaportApprovals } from '../../lib/asset-checks'
 import { ZONE_ADDRESSES, WHITELISTED_ERC20, CHAINS } from '../../lib/constants'
 import { parseUnits } from 'ethers'
+import { ItemType } from '@opensea/seaport-js/lib/constants'
 import TxChecklist, { buildSteps } from '../tx-checklist'
 import AssetTally from './asset-tally'
 import { friendlyContractError } from '../../lib/errors'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+function normalizeMakerAsset(asset, chainId) {
+  const itemType = asset.itemType !== undefined
+    ? Number(asset.itemType)
+    : asset.assetType === 'ERC20'
+      ? ItemType.ERC20
+      : asset.assetType === 'ERC1155'
+        ? ItemType.ERC1155
+        : ItemType.ERC721
+
+  const normalized = {
+    ...asset,
+    itemType,
+    identifierOrCriteria: asset.criteria ? '0' : asset.tokenId,
+  }
+
+  if (itemType === ItemType.ERC20) {
+    const decimals = (WHITELISTED_ERC20[chainId]?.[asset.token])?.decimals ?? 18
+    normalized.amount = parseUnits(asset.amount || '0', decimals).toString()
+  }
+
+  return normalized
+}
+
+function assertAll(results, message) {
+  const failed = results.find((result) => !result.held && !result.approved)
+  if (failed) throw new Error(failed.reason ? `${message}: ${failed.reason}.` : message)
+}
 
 function friendlyError(err) {
   const msg = (err?.info?.error?.message || err?.reason || err?.shortMessage || err?.message || '').toLowerCase()
@@ -20,7 +50,7 @@ function friendlyError(err) {
   const contractMsg = friendlyContractError(err)
   if (contractMsg) return contractMsg
 
-  return err?.reason || err?.shortMessage || 'Transaction failed.'
+  return err?.reason || err?.shortMessage || err?.message || 'Transaction failed.'
 }
 
 export default function StepExecute({ wallet, onComplete }) {
@@ -42,7 +72,7 @@ export default function StepExecute({ wallet, onComplete }) {
     setError(null)
     setRunning(true)
 
-    const txSteps = buildSteps(makerAssets, 'Sign Order', 'Sign Listing', 'Register Order')
+    const txSteps = buildSteps(makerAssets, 'Check Offered Assets', 'Sign Order', 'Sign Listing', 'Register Order')
     setSteps([...txSteps])
 
     function updateStep(index, update) {
@@ -80,10 +110,26 @@ export default function StepExecute({ wallet, onComplete }) {
         updateStep(stepIndex, { status: 'done' })
       }
 
+      const checkIndex = txSteps.findIndex((s) => s.label === 'Check Offered Assets')
+      updateStep(checkIndex, { status: 'checking' })
+      const normalizedMakerAssets = makerAssets.map((asset) => normalizeMakerAsset(asset, chainId))
+      const criteriaIndexes = new Set(
+        normalizedMakerAssets
+          .map((asset, index) => asset.criteria ? index : -1)
+          .filter((index) => index !== -1)
+      )
+      const [holdings, approvals] = await Promise.all([
+        checkHoldings(chainId, wallet.address, normalizedMakerAssets.filter((_, index) => !criteriaIndexes.has(index))),
+        checkSeaportApprovals(chainId, wallet.address, normalizedMakerAssets),
+      ])
+      assertAll(holdings, 'You no longer hold all offered assets')
+      assertAll(approvals, 'Seaport approval is still missing for an offered asset')
+      updateStep(checkIndex, { status: 'done' })
+
       // Sign Seaport order, then sign OTCRegistry listing, then register onchain
-      const signOrderIndex = txSteps.length - 3
-      const signListingIndex = txSteps.length - 2
-      const registerIndex = txSteps.length - 1
+      const signOrderIndex = txSteps.findIndex((s) => s.label === 'Sign Order')
+      const signListingIndex = txSteps.findIndex((s) => s.label === 'Sign Listing')
+      const registerIndex = txSteps.findIndex((s) => s.label === 'Register Order')
 
       updateStep(signOrderIndex, { status: 'signing' })
 
@@ -115,7 +161,7 @@ export default function StepExecute({ wallet, onComplete }) {
       onComplete(chainId, tx.hash)
     } catch (err) {
       console.error(err)
-      const failedIndex = txSteps.findIndex((s) => s.status === 'signing' || s.status === 'confirming')
+      const failedIndex = txSteps.findIndex((s) => s.status === 'checking' || s.status === 'signing' || s.status === 'confirming')
       const msg = friendlyError(err)
       if (failedIndex !== -1) {
         updateStep(failedIndex, { status: 'failed', error: msg })
