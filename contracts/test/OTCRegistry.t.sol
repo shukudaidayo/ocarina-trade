@@ -683,6 +683,24 @@ contract OTCRegistryTest is Test {
         zone.registerOrder(reg);
     }
 
+    function test_registerOrder_revertsFutureStartTime() public {
+        vm.warp(1_000_000);
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.startTime = block.timestamp + 1;
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(
+            abi.encodeWithSelector(OTCRegistry.FutureStartTime.selector, block.timestamp, block.timestamp + 1)
+        );
+        zone.registerOrder(reg);
+    }
+
     function test_registerOrder_acceptsAtExactEndTime() public {
         OrderComponents memory components = _buildComponents(maker, taker, block.timestamp);
         bytes32 orderHash = _orderHash(components);

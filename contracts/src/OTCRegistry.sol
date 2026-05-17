@@ -48,6 +48,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     error MemoTooLong(uint256 length, uint256 maxLength);
     error AlreadyRegistered(bytes32 orderHash, address maker);
     error Expired(uint256 currentTime, uint256 endTime);
+    error FutureStartTime(uint256 currentTime, uint256 startTime);
     error WrongZone(address provided, address expected);
     error WrongOrderType(OrderType provided, OrderType expected);
     error InvalidConduitKey(bytes32 conduitKey);
@@ -121,6 +122,9 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         if (memoLength > MAX_MEMO_LENGTH) revert MemoTooLong(memoLength, MAX_MEMO_LENGTH);
         if (reg.components.startTime > reg.components.endTime) {
             revert InvalidTime(reg.components.startTime, reg.components.endTime);
+        }
+        if (reg.components.startTime > block.timestamp) {
+            revert FutureStartTime(block.timestamp, reg.components.startTime);
         }
         if (block.timestamp > reg.components.endTime) revert Expired(block.timestamp, reg.components.endTime);
         if (reg.components.zone != address(this)) revert WrongZone(reg.components.zone, address(this));

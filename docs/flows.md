@@ -32,7 +32,7 @@ sequenceDiagram
     F->>W: registerOrder(reg)
     W->>Z: registerOrder tx (submitter can be maker or a relayer)
     Z->>Z: Check memo length ≤ 280
-    Z->>Z: Check startTime <= endTime and !expired (endTime)
+    Z->>Z: Check startTime <= block.timestamp <= endTime
     Z->>Z: Assert zone == address(this)
     Z->>Z: Assert orderType == FULL_RESTRICTED
     Z->>Z: Assert conduitKey == bytes32(0)
