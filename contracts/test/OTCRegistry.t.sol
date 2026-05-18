@@ -113,8 +113,9 @@ contract OTCRegistryTest is Test {
         keccak256("OrderRegistration(bytes32 orderHash,bytes seaportSignature,string memo)");
     bytes32 internal constant TIP_ITEM_TYPEHASH =
         keccak256("TipItem(uint8 itemType,address token,uint256 identifier,uint256 amount,address recipient)");
-    bytes32 internal constant TIP_AUTHORIZATION_TYPEHASH =
-        keccak256("TipAuthorization(bytes32 orderHash,address fulfiller,bytes32 tipsHash,uint256 deadline)");
+    bytes32 internal constant TIP_AUTHORIZATION_TYPEHASH = keccak256(
+        "TipAuthorization(bytes32 orderHash,address fulfiller,TipItem[] tips,uint256 deadline)TipItem(uint8 itemType,address token,uint256 identifier,uint256 amount,address recipient)"
+    );
 
     uint256 internal constant DEFAULT_END_TIME = 1e18;
     uint256 internal constant ZONE_HASH_VERSION = 1;
@@ -196,12 +197,13 @@ contract OTCRegistryTest is Test {
         return abi.encodePacked(r, s, v);
     }
 
-    function _tipDigest(bytes32 orderHash, address fulfiller, bytes32 tipsHash, uint256 deadline)
+    function _tipDigest(bytes32 orderHash, address fulfiller, bytes32 tipsArrayHash, uint256 deadline)
         internal
         view
         returns (bytes32)
     {
-        bytes32 structHash = keccak256(abi.encode(TIP_AUTHORIZATION_TYPEHASH, orderHash, fulfiller, tipsHash, deadline));
+        bytes32 structHash =
+            keccak256(abi.encode(TIP_AUTHORIZATION_TYPEHASH, orderHash, fulfiller, tipsArrayHash, deadline));
         return keccak256(abi.encodePacked(bytes2(0x1901), zone.DOMAIN_SEPARATOR(), structHash));
     }
 
@@ -210,11 +212,11 @@ contract OTCRegistryTest is Test {
         view
         returns (bytes memory)
     {
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, _tipDigest(orderHash, fulfiller, _tipsHash(tips), deadline));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, _tipDigest(orderHash, fulfiller, _tipArrayHash(tips), deadline));
         return abi.encodePacked(r, s, v);
     }
 
-    function _tipsHash(ReceivedItem[] memory tips) internal pure returns (bytes32) {
+    function _tipArrayHash(ReceivedItem[] memory tips) internal pure returns (bytes32) {
         bytes32[] memory tipHashes = new bytes32[](tips.length);
         for (uint256 i = 0; i < tips.length; ++i) {
             tipHashes[i] = keccak256(

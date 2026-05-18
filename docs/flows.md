@@ -106,7 +106,7 @@ sequenceDiagram
     opt Optional cash tip enabled by a frontend
         F->>F: Append native / whitelisted ERC-20 tip consideration items
         F->>W: EIP-712 sign TipAuthorization (no gas)
-        Note over F,W: Covers orderHash, fulfiller, tipsHash, deadline
+        Note over F,W: Covers orderHash, fulfiller, TipItem[] tips, deadline
         W-->>F: Tip authorization signature
         F->>F: ABI-encode (deadline, signature) as advancedOrder.extraData
     end

@@ -91,8 +91,9 @@ contract OTCRegistry is ZoneInterface, EIP712 {
 
     bytes32 private constant _TIP_ITEM_TYPEHASH =
         keccak256("TipItem(uint8 itemType,address token,uint256 identifier,uint256 amount,address recipient)");
-    bytes32 private constant _TIP_AUTHORIZATION_TYPEHASH =
-        keccak256("TipAuthorization(bytes32 orderHash,address fulfiller,bytes32 tipsHash,uint256 deadline)");
+    bytes32 private constant _TIP_AUTHORIZATION_TYPEHASH = keccak256(
+        "TipAuthorization(bytes32 orderHash,address fulfiller,TipItem[] tips,uint256 deadline)TipItem(uint8 itemType,address token,uint256 identifier,uint256 amount,address recipient)"
+    );
 
     constructor(address[] memory _tokens, address _seaport) {
         if (_seaport == address(0) || _seaport.code.length == 0) revert InvalidSeaport(_seaport);
@@ -336,10 +337,10 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         (uint256 deadline, bytes memory signature) = abi.decode(zoneParameters.extraData, (uint256, bytes));
         if (block.timestamp > deadline) revert TipAuthorizationExpired(block.timestamp, deadline);
 
-        bytes32 tipsHash = _hashTips(zoneParameters.consideration, originalConsiderationCount, considerationCount);
+        bytes32 tipsArrayHash = _hashTips(zoneParameters.consideration, originalConsiderationCount, considerationCount);
         bytes32 structHash = keccak256(
             abi.encode(
-                _TIP_AUTHORIZATION_TYPEHASH, zoneParameters.orderHash, zoneParameters.fulfiller, tipsHash, deadline
+                _TIP_AUTHORIZATION_TYPEHASH, zoneParameters.orderHash, zoneParameters.fulfiller, tipsArrayHash, deadline
             )
         );
         bytes32 digest = _hashTypedData(structHash);

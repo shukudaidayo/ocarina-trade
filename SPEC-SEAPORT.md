@@ -190,12 +190,12 @@ struct TipItem {
 struct TipAuthorization {
     bytes32 orderHash;
     address fulfiller;
-    bytes32 tipsHash;
+    TipItem[] tips;
     uint256 deadline;
 }
 ```
 
-`tipsHash` is the EIP-712-style hash of the exact appended `TipItem[]` in order. `extraData` is `abi.encode(uint256 deadline, bytes signature)`. `validateOrder` decodes `extraData`, checks `deadline >= block.timestamp`, recomputes `tipsHash` from the appended consideration items, builds the `TipAuthorization` digest with `fulfiller = zoneParameters.fulfiller`, and verifies the signature with `SignatureCheckerLib.isValidSignatureNowCalldata(zoneParameters.fulfiller, digest, signature)`.
+The signed `tips` array is the exact appended `TipItem[]` in order, using the standard EIP-712 nested-array encoding. `extraData` is `abi.encode(uint256 deadline, bytes signature)`. `validateOrder` decodes `extraData`, checks `deadline >= block.timestamp`, recomputes the canonical EIP-712 array hash from the appended consideration items, builds the `TipAuthorization` digest with `fulfiller = zoneParameters.fulfiller`, and verifies the signature with `SignatureCheckerLib.isValidSignatureNowCalldata(zoneParameters.fulfiller, digest, signature)`.
 
 This does not make a malicious frontend impossible, because a hostile UI can still ask the user to sign a harmful typed message and display it poorly. It does prevent a frontend from silently hiding tips only inside Seaport calldata, and it gives wallets and ERC-7730 metadata a clear signing surface for human-readable tip prompts.
 

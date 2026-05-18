@@ -9,6 +9,7 @@ export const CHAINS = {
 
 // Seaport 1.6 canonical address (same on all chains)
 export const SEAPORT_ADDRESS = '0x0000000000000068F116a894984e2DB1123eB395'
+export const OCARINA_SUPPORT_ADDRESS = '0x9a659894e5D115846767dB0e1685744c452E7a6e'
 
 // OTCRegistry contract addresses per chain
 export const ZONE_ADDRESSES = {
@@ -51,6 +52,13 @@ export const WHITELISTED_ERC20 = {
     '0x2D270e6886d130D724215A266106e6832161EAEd': { symbol: 'USDC', decimals: 6 },
     '0x0200C29006150606B650577BBE7B6248F58470c1': { symbol: 'USDT0', decimals: 6 },
   },
+}
+
+export const USDC_ADDRESSES = {
+  1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+  8453: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+  137: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+  57073: '0x2D270e6886d130D724215A266106e6832161EAEd',
 }
 
 const ORDER_COMPONENTS_ABI = {

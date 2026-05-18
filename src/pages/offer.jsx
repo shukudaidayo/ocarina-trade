@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useOutletContext } from 'react-router'
-import { getOrderFromTx, getOrderStatus, getCounter, fulfillOrder, cancelOrder, ensureApproval, simulateFulfillment, deriveOrderStatus, getFillTxHash } from '../lib/contract'
+import { getOrderFromTx, getOrderStatus, getCounter, fulfillOrder, cancelOrder, ensureApproval, simulateFulfillment, deriveOrderStatus, getFillTxHash, signTipAuthorization } from '../lib/contract'
 import { checkHoldings, checkSeaportApprovals } from '../lib/asset-checks'
 import { getVerificationStatus } from '../lib/verification'
 import { fetchMetadata } from '../lib/metadata'
@@ -10,13 +10,14 @@ import AssetCard from '../components/asset-card'
 import AddressDisplay from '../components/address-display'
 import { truncateAddress } from '../lib/wallet'
 import TxChecklist, { buildSteps } from '../components/tx-checklist'
-import { WHITELISTED_ERC20, CHAINS } from '../lib/constants'
+import { WHITELISTED_ERC20, CHAINS, OCARINA_SUPPORT_ADDRESS, USDC_ADDRESSES } from '../lib/constants'
 import { ItemType } from '@opensea/seaport-js/lib/constants'
 import { formatUnits } from 'ethers'
 import { formatTokenAmount } from '../lib/wallet'
 import { friendlyContractError } from '../lib/errors'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+const SUPPORT_TIP_USDC_UNITS = '5000000'
 
 function friendlyFillError(err) {
   const contractMsg = friendlyContractError(err)
@@ -93,6 +94,31 @@ function hasDuplicateERC721CriteriaSelections(params, selections) {
   })
 }
 
+function supportTipForChain(chainId) {
+  const token = USDC_ADDRESSES[Number(chainId)]
+  if (!token) return null
+  return {
+    itemType: ItemType.ERC20,
+    token,
+    identifier: '0',
+    amount: SUPPORT_TIP_USDC_UNITS,
+    recipient: OCARINA_SUPPORT_ADDRESS,
+  }
+}
+
+function supportTipAsset(chainId) {
+  const tip = supportTipForChain(chainId)
+  if (!tip) return null
+  return {
+    token: tip.token,
+    tokenId: tip.identifier,
+    amount: tip.amount,
+    startAmount: tip.amount,
+    assetType: 'ERC20',
+    itemType: ItemType.ERC20,
+  }
+}
+
 export default function Offer() {
   useEffect(() => { document.title = 'Offer — ocarina.trade' }, [])
   const { chainId, txHash } = useParams()
@@ -109,6 +135,7 @@ export default function Offer() {
   const [offerHoldings, setOfferHoldings] = useState(null) // array parallel to offer items
   const [offerApprovals, setOfferApprovals] = useState(null) // array parallel to offer items
   const [considerationHoldings, setConsiderationHoldings] = useState(null) // array parallel to consideration items
+  const [supportTipHolding, setSupportTipHolding] = useState(null)
   const [showVerifyModal, setShowVerifyModal] = useState(false)
   const [unverifiedAssets, setUnverifiedAssets] = useState([])
   const [fillTxHash, setFillTxHash] = useState(null)
@@ -117,6 +144,7 @@ export default function Offer() {
   const [shareImageUrl, setShareImageUrl] = useState(null)
   const [generatingImage, setGeneratingImage] = useState(false)
   const [criteriaSelections, setCriteriaSelections] = useState({ offer: {}, consideration: {} })
+  const [supportOcarina, setSupportOcarina] = useState(false)
 
   // Fetch order data from tx hash
   useEffect(() => {
@@ -282,6 +310,7 @@ export default function Offer() {
     setOfferHoldings(null)
     setOfferApprovals(null)
     setConsiderationHoldings(null)
+    setSupportTipHolding(null)
 
     const { items: resolvedOffer, missing: missingOffer } = resolveCriteriaItems(params.offer, criteriaSelections.offer)
     const { items: resolvedConsideration, missing: missingConsideration } = resolveCriteriaItems(params.consideration, criteriaSelections.consideration)
@@ -308,12 +337,20 @@ export default function Offer() {
         const withMissing = applyMissingCriteria(results, missingConsideration)
         if (!cancelled) setConsiderationHoldings(withMissing)
       })
+      if (supportOcarina) {
+        const tipAsset = supportTipAsset(chainId)
+        if (tipAsset) {
+          checkHoldings(Number(chainId), wallet.address, [tipAsset]).then((results) => {
+            if (!cancelled) setSupportTipHolding(results[0])
+          })
+        }
+      }
     } else {
       setConsiderationHoldings(null)
     }
 
     return () => { cancelled = true }
-  }, [orderData, statusLabel, chainId, wallet, criteriaSelections])
+  }, [orderData, statusLabel, chainId, wallet, criteriaSelections, supportOcarina])
 
   const checkVerificationAndFill = useCallback(async () => {
     if (!orderData) return
@@ -363,6 +400,7 @@ export default function Offer() {
     setSubmitting(true)
 
     const params = orderData.order.parameters
+    const supportTip = supportOcarina ? supportTipForChain(chainId) : null
     // Build taker assets from consideration items
     const takerAssets = params.consideration.map((c) => {
       const it = Number(c.itemType)
@@ -376,8 +414,9 @@ export default function Offer() {
         itemType: it,
       }
     })
+    if (supportTip) takerAssets.push(supportTipAsset(chainId))
 
-    const txSteps = buildSteps(takerAssets, 'Check Fillability', 'Accept Offer')
+    const txSteps = buildSteps(takerAssets, supportTip ? 'Sign Support Tip' : null, 'Check Fillability', 'Accept Offer')
     setSteps(txSteps)
 
     function updateStep(index, update) {
@@ -406,14 +445,45 @@ export default function Offer() {
         updateStep(stepIndex, { status: 'done' })
       }
 
+      let tipAuthorization = '0x'
+      const tips = supportTip ? [supportTip] : []
+      if (supportTip) {
+        const tipIndex = txSteps.findIndex((s) => s.label === 'Sign Support Tip')
+        updateStep(tipIndex, { status: 'signing' })
+        tipAuthorization = await signTipAuthorization(
+          wallet.provider,
+          Number(chainId),
+          orderData.zoneAddress,
+          orderData.orderHash,
+          tips
+        )
+        updateStep(tipIndex, { status: 'done' })
+      }
+
       const simulationIndex = txSteps.findIndex((s) => s.label === 'Check Fillability')
       updateStep(simulationIndex, { status: 'checking' })
-      await simulateFulfillment(wallet.provider, orderData.order, criteriaSelections)
+      await simulateFulfillment(
+        wallet.provider,
+        Number(chainId),
+        orderData.orderHash,
+        orderData.order,
+        criteriaSelections,
+        tips,
+        tipAuthorization
+      )
       updateStep(simulationIndex, { status: 'done' })
 
       const actionIndex = txSteps.findIndex((s) => s.label === 'Accept Offer')
       updateStep(actionIndex, { status: 'signing' })
-      const { wait } = await fulfillOrder(wallet.provider, orderData.order, criteriaSelections)
+      const { wait } = await fulfillOrder(
+        wallet.provider,
+        Number(chainId),
+        orderData.orderHash,
+        orderData.order,
+        criteriaSelections,
+        tips,
+        tipAuthorization
+      )
       updateStep(actionIndex, { status: 'confirming' })
       const receipt = await wait()
       updateStep(actionIndex, { status: 'done' })
@@ -431,7 +501,7 @@ export default function Offer() {
     } finally {
       setSubmitting(false)
     }
-  }, [wallet, orderData, criteriaSelections])
+  }, [wallet, orderData, criteriaSelections, chainId, supportOcarina])
 
   const handleCancel = useCallback(async () => {
     if (!wallet || !orderData) return
@@ -498,6 +568,9 @@ export default function Offer() {
   const makerMissing = offerHoldings && offerHoldings.some((h) => !h.held)
   const makerApprovalMissing = offerApprovals && offerApprovals.some((a) => !a.approved)
   const takerMissing = considerationHoldings && considerationHoldings.some((h) => !h.held)
+  const supportTipAvailable = Boolean(supportTipForChain(chainId))
+  const supportTipChecking = supportOcarina && !supportTipHolding
+  const supportTipMissing = supportOcarina && supportTipHolding && !supportTipHolding.held
   const fillabilityChecking = isOpen && (!offerHoldings || !offerApprovals)
   const fillabilityBlocked = makerMissing || makerApprovalMissing
   const missingCriteria = hasMissingCriteria(params, criteriaSelections)
@@ -741,7 +814,7 @@ export default function Offer() {
       )}
 
       {wallet && !wrongChain && isOpen && !isExpired && isTaker && !isMaker && (() => {
-        const blocked = fillabilityChecking || fillabilityBlocked || takerMissing || missingCriteria || duplicateERC721Criteria
+        const blocked = fillabilityChecking || fillabilityBlocked || takerMissing || supportTipChecking || supportTipMissing || missingCriteria || duplicateERC721Criteria
         return (
           <>
             {makerMissing && (
@@ -753,11 +826,25 @@ export default function Offer() {
             {takerMissing && (
               <p className="form-error">You do not hold all required assets to accept this offer.</p>
             )}
+            {supportTipMissing && (
+              <p className="form-error">You need at least $5 USDC to include the support tip.</p>
+            )}
             {missingCriteria && (
               <p className="form-error">Choose a token ID for each Any Token item before accepting this offer.</p>
             )}
             {duplicateERC721Criteria && (
               <p className="form-error">Each ERC-721 Any Token item must use a different token ID.</p>
+            )}
+            {supportTipAvailable && (
+              <label className="support-tip-toggle">
+                <input
+                  type="checkbox"
+                  checked={supportOcarina}
+                  onChange={(e) => setSupportOcarina(e.target.checked)}
+                  disabled={submitting}
+                />
+                <span>Support Ocarina - $5 USDC</span>
+              </label>
             )}
             <button className="btn btn-primary" onClick={checkVerificationAndFill} disabled={submitting || blocked}>
               {submitting ? 'Accepting...' : 'Accept Offer'}

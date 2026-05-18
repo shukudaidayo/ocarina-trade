@@ -1,4 +1,4 @@
-import { BrowserProvider, Contract, Interface, JsonRpcProvider, zeroPadValue, ZeroHash, ZeroAddress, parseUnits } from 'ethers'
+import { AbiCoder, BrowserProvider, Contract, Interface, JsonRpcProvider, zeroPadValue, ZeroHash, ZeroAddress, parseUnits } from 'ethers'
 import { Seaport } from '@opensea/seaport-js'
 import { ItemType, OrderType } from '@opensea/seaport-js/lib/constants'
 import { CHAINS, SEAPORT_ADDRESS, ZONE_ADDRESSES, ZONE_DEPLOY_BLOCKS, ZONE_ABI, WHITELISTED_ERC20 } from './constants'
@@ -45,6 +45,22 @@ const REGISTRATION_TYPES = {
     { name: 'orderHash', type: 'bytes32' },
     { name: 'seaportSignature', type: 'bytes' },
     { name: 'memo', type: 'string' },
+  ],
+}
+
+const TIP_AUTHORIZATION_TYPES = {
+  TipAuthorization: [
+    { name: 'orderHash', type: 'bytes32' },
+    { name: 'fulfiller', type: 'address' },
+    { name: 'tips', type: 'TipItem[]' },
+    { name: 'deadline', type: 'uint256' },
+  ],
+  TipItem: [
+    { name: 'itemType', type: 'uint8' },
+    { name: 'token', type: 'address' },
+    { name: 'identifier', type: 'uint256' },
+    { name: 'amount', type: 'uint256' },
+    { name: 'recipient', type: 'address' },
   ],
 }
 
@@ -410,20 +426,50 @@ function buildCriteriaResolvers(order, criteriaSelections = {}) {
   return resolvers
 }
 
-function nativeConsiderationValue(order) {
-  return order.parameters.consideration.reduce((sum, item) => (
+function nativeConsiderationValue(order, tips = []) {
+  const originalValue = order.parameters.consideration.reduce((sum, item) => (
     Number(item.itemType) === ItemType.NATIVE ? sum + BigInt(item.startAmount) : sum
   ), 0n)
+  return tips.reduce((sum, tip) => (
+    Number(tip.itemType) === ItemType.NATIVE ? sum + BigInt(tip.amount) : sum
+  ), originalValue)
 }
 
-function advancedOrderFromOrder(order) {
+function advancedOrderFromOrder(order, tips = [], extraData = '0x') {
+  const tipConsideration = tips.map((tip) => ({
+    itemType: tip.itemType,
+    token: tip.token,
+    identifierOrCriteria: tip.identifier,
+    startAmount: tip.amount,
+    endAmount: tip.amount,
+    recipient: tip.recipient,
+  }))
   return {
-    parameters: order.parameters,
+    parameters: {
+      ...order.parameters,
+      consideration: [...order.parameters.consideration, ...tipConsideration],
+    },
     signature: order.signature,
-    extraData: '0x',
+    extraData,
     numerator: 1,
     denominator: 1,
   }
+}
+
+export async function signTipAuthorization(rawProvider, chainId, zoneAddress, orderHash, tips) {
+  if (!tips?.length) return '0x'
+  const signer = await getSigner(rawProvider)
+  const fulfiller = await signer.getAddress()
+  const deadline = Math.floor(Date.now() / 1000 + 10 * 60).toString()
+  const domain = {
+    name: 'OTCRegistry',
+    version: '1',
+    chainId,
+    verifyingContract: zoneAddress,
+  }
+  const value = { orderHash, fulfiller, tips, deadline }
+  const signature = await signer.signTypedData(domain, TIP_AUTHORIZATION_TYPES, value)
+  return AbiCoder.defaultAbiCoder().encode(['uint256', 'bytes'], [deadline, signature])
 }
 
 /**
@@ -431,42 +477,40 @@ function advancedOrderFromOrder(order) {
  * Run after needed approvals are in place; otherwise the simulation will fail
  * for missing taker approval rather than collection transfer policy.
  */
-export async function simulateFulfillment(rawProvider, order, criteriaSelections = null) {
+export async function simulateFulfillment(rawProvider, chainId, orderHash, order, criteriaSelections = null, tips = [], tipAuthorization = null) {
   const signer = await getSigner(rawProvider)
   const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
-  const value = nativeConsiderationValue(order)
+  const value = nativeConsiderationValue(order, tips)
+  const criteriaResolvers = criteriaSelections ? buildCriteriaResolvers(order, criteriaSelections) : []
 
-  if (criteriaSelections) {
-    const criteriaResolvers = buildCriteriaResolvers(order, criteriaSelections)
-    if (criteriaResolvers.length > 0) {
-      return seaport.fulfillAdvancedOrder.staticCall(
-        advancedOrderFromOrder(order),
-        criteriaResolvers,
-        ZeroHash,
-        ZeroAddress,
-        { value }
-      )
-    }
+  if (criteriaResolvers.length > 0 || tips.length > 0) {
+    const extraData = tipAuthorization ?? await signTipAuthorization(rawProvider, chainId, order.parameters.zone, orderHash, tips)
+    return seaport.fulfillAdvancedOrder.staticCall(
+      advancedOrderFromOrder(order, tips, extraData),
+      criteriaResolvers,
+      ZeroHash,
+      ZeroAddress,
+      { value }
+    )
   }
 
   return seaport.fulfillOrder.staticCall(order, ZeroHash, { value })
 }
 
-export async function fulfillOrder(rawProvider, order, criteriaSelections = null) {
-  if (criteriaSelections) {
-    const criteriaResolvers = buildCriteriaResolvers(order, criteriaSelections)
-    if (criteriaResolvers.length > 0) {
-      const signer = await getSigner(rawProvider)
-      const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
-      const tx = await seaport.fulfillAdvancedOrder(
-        advancedOrderFromOrder(order),
-        criteriaResolvers,
-        ZeroHash,
-        ZeroAddress,
-        { value: nativeConsiderationValue(order) }
-      )
-      return { tx, wait: () => tx.wait() }
-    }
+export async function fulfillOrder(rawProvider, chainId, orderHash, order, criteriaSelections = null, tips = [], tipAuthorization = null) {
+  const criteriaResolvers = criteriaSelections ? buildCriteriaResolvers(order, criteriaSelections) : []
+  if (criteriaResolvers.length > 0 || tips.length > 0) {
+    const signer = await getSigner(rawProvider)
+    const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
+    const extraData = tipAuthorization ?? await signTipAuthorization(rawProvider, chainId, order.parameters.zone, orderHash, tips)
+    const tx = await seaport.fulfillAdvancedOrder(
+      advancedOrderFromOrder(order, tips, extraData),
+      criteriaResolvers,
+      ZeroHash,
+      ZeroAddress,
+      { value: nativeConsiderationValue(order, tips) }
+    )
+    return { tx, wait: () => tx.wait() }
   }
   const signer = await getSigner(rawProvider)
   const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
