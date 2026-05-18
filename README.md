@@ -18,6 +18,7 @@ Asset transfer and settlement are handled by [Seaport](https://github.com/Projec
 The only custom contract is **OTCRegistry**, which:
 - Restricts who can fill an order (optional taker address)
 - Enforces an ERC-20 whitelist (prevents impostor token scams)
+- Requires explicit fulfiller signatures for any appended cash tips
 - Publishes signed orders through events for the offers page
 - Requires prior registration before an OTCRegistry-zoned order can settle
 

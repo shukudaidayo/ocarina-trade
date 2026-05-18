@@ -11,6 +11,7 @@ sequenceDiagram
 
     F->>F: Build order params from exact assets and optional Any Token criteria items
     Note over F: Any Token uses ERC721_WITH_CRITERIA / ERC1155_WITH_CRITERIA<br/>with identifierOrCriteria = 0 (wildcard)
+    F->>F: Encode zoneHash: taker in low 160 bits,<br/>original consideration count + version in upper bits
 
     F->>W: setApprovalForAll(seaport, true)
     W->>S: Approval tx (per collection)
@@ -36,7 +37,8 @@ sequenceDiagram
     Z->>Z: Assert zone == address(this)
     Z->>Z: Assert orderType == FULL_RESTRICTED
     Z->>Z: Assert conduitKey == bytes32(0)
-    Z->>Z: Require canonical zoneHash (upper 96 bits == 0)
+    Z->>Z: Require valid zoneHash metadata
+    Note over Z: version == 1, reserved bits == 0,<br/>originalConsiderationCount == components.consideration.length
     Z->>S: getCounter(offerer)
     S-->>Z: Current maker counter
     Z->>Z: Require components.counter == current counter
@@ -101,21 +103,29 @@ sequenceDiagram
         F->>F: Use selected token IDs for holdings / verification checks
     end
 
+    opt Optional cash tip enabled by a frontend
+        F->>F: Append native / whitelisted ERC-20 tip consideration items
+        F->>W: EIP-712 sign TipAuthorization (no gas)
+        Note over F,W: Covers orderHash, fulfiller, tipsHash, deadline
+        W-->>F: Tip authorization signature
+        F->>F: ABI-encode (deadline, signature) as advancedOrder.extraData
+    end
+
     F->>W: setApprovalForAll(seaport, true)
     W->>S: Approval tx (per collection)
     S-->>F: Confirmed
 
-    alt Exact-item order
+    alt Exact-item no-tip order
         F->>S: fulfillOrder.staticCall(order, bytes32(0))
-    else Criteria order
+    else Criteria order or tipped order
         F->>S: fulfillAdvancedOrder.staticCall(advancedOrder, criteriaResolvers, bytes32(0), address(0))
     end
     S-->>F: Simulation succeeds or reverts before final tx
 
-    alt Exact-item order
+    alt Exact-item no-tip order
         F->>W: fulfillOrder(order, bytes32(0))
         W->>S: fulfillOrder tx
-    else Criteria order
+    else Criteria order or tipped order
         F->>W: fulfillAdvancedOrder(advancedOrder, criteriaResolvers, bytes32(0), address(0))
         W->>S: fulfillAdvancedOrder tx
     end
@@ -133,6 +143,14 @@ sequenceDiagram
     Z->>Z: Require msg.sender == seaport
     Z->>Z: Require registered[orderHash]
     Z->>Z: Recheck ERC-20 whitelist
+    Z->>Z: Decode original consideration count from zoneHash
+    alt Extra consideration items are present
+        Z->>Z: Treat extras as tips
+        Z->>Z: Require native or whitelisted ERC-20 tips only
+        Z->>Z: Verify TipAuthorization from fulfiller
+    else No extra consideration items
+        Z->>Z: Require extraData is empty
+    end
     Z-->>S: selector (valid)
 
     S->>S: emit OrderFulfilled(orderHash, ...)

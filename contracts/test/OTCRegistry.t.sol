@@ -101,8 +101,9 @@ contract OTCRegistryTest is Test {
     address public erc1155;
 
     uint256 public makerPk = 0xA11CE;
+    uint256 public takerPk = 0xB0B;
     address public maker;
-    address public taker = address(0x2);
+    address public taker;
     address public stranger = address(0x3);
 
     // Dummy Seaport signature — real sig verified by Seaport at fulfillment, not here.
@@ -110,11 +111,17 @@ contract OTCRegistryTest is Test {
 
     bytes32 internal constant REGISTRATION_TYPEHASH =
         keccak256("OrderRegistration(bytes32 orderHash,bytes seaportSignature,string memo)");
+    bytes32 internal constant TIP_ITEM_TYPEHASH =
+        keccak256("TipItem(uint8 itemType,address token,uint256 identifier,uint256 amount,address recipient)");
+    bytes32 internal constant TIP_AUTHORIZATION_TYPEHASH =
+        keccak256("TipAuthorization(bytes32 orderHash,address fulfiller,bytes32 tipsHash,uint256 deadline)");
 
     uint256 internal constant DEFAULT_END_TIME = 1e18;
+    uint256 internal constant ZONE_HASH_VERSION = 1;
 
     function setUp() public {
         maker = vm.addr(makerPk);
+        taker = vm.addr(takerPk);
         mockSeaport = new MockSeaport();
         seaport = address(mockSeaport);
         fakeERC20 = address(new MockERC20());
@@ -149,7 +156,7 @@ contract OTCRegistryTest is Test {
             recipient: payable(_maker)
         });
 
-        bytes32 zoneHash = _taker != address(0) ? bytes32(uint256(uint160(_taker))) : bytes32(0);
+        bytes32 zoneHash = _encodeZoneHash(_taker, consideration.length);
 
         return OrderComponents({
             offerer: _maker,
@@ -176,6 +183,10 @@ contract OTCRegistryTest is Test {
         return keccak256(abi.encodePacked(bytes2(0x1901), zone.DOMAIN_SEPARATOR(), structHash));
     }
 
+    function _encodeZoneHash(address _taker, uint256 originalConsiderationCount) internal pure returns (bytes32) {
+        return bytes32(uint256(uint160(_taker)) | (originalConsiderationCount << 160) | (ZONE_HASH_VERSION << 192));
+    }
+
     function _sign(uint256 pk, bytes32 orderHash, bytes memory seaportSig, string memory memo)
         internal
         view
@@ -183,6 +194,41 @@ contract OTCRegistryTest is Test {
     {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, _digest(orderHash, seaportSig, memo));
         return abi.encodePacked(r, s, v);
+    }
+
+    function _tipDigest(bytes32 orderHash, address fulfiller, bytes32 tipsHash, uint256 deadline)
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 structHash = keccak256(abi.encode(TIP_AUTHORIZATION_TYPEHASH, orderHash, fulfiller, tipsHash, deadline));
+        return keccak256(abi.encodePacked(bytes2(0x1901), zone.DOMAIN_SEPARATOR(), structHash));
+    }
+
+    function _signTip(uint256 pk, bytes32 orderHash, address fulfiller, ReceivedItem[] memory tips, uint256 deadline)
+        internal
+        view
+        returns (bytes memory)
+    {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, _tipDigest(orderHash, fulfiller, _tipsHash(tips), deadline));
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _tipsHash(ReceivedItem[] memory tips) internal pure returns (bytes32) {
+        bytes32[] memory tipHashes = new bytes32[](tips.length);
+        for (uint256 i = 0; i < tips.length; ++i) {
+            tipHashes[i] = keccak256(
+                abi.encode(
+                    TIP_ITEM_TYPEHASH,
+                    tips[i].itemType,
+                    tips[i].token,
+                    tips[i].identifier,
+                    tips[i].amount,
+                    tips[i].recipient
+                )
+            );
+        }
+        return keccak256(abi.encodePacked(tipHashes));
     }
 
     function _buildComponentsWithERC20(address _maker, address _taker, address offerToken, address considerToken)
@@ -205,7 +251,7 @@ contract OTCRegistryTest is Test {
             recipient: payable(_maker)
         });
 
-        bytes32 zoneHash = _taker != address(0) ? bytes32(uint256(uint160(_taker))) : bytes32(0);
+        bytes32 zoneHash = _encodeZoneHash(_taker, consideration.length);
 
         return OrderComponents({
             offerer: _maker,
@@ -279,6 +325,23 @@ contract OTCRegistryTest is Test {
         params.orderHash = orderHash;
         params.offerer = reg.components.offerer;
         return params;
+    }
+
+    function _appendSingleTip(ZoneParameters memory params, ReceivedItem memory tip)
+        internal
+        pure
+        returns (ZoneParameters memory, ReceivedItem[] memory)
+    {
+        ReceivedItem[] memory tips = new ReceivedItem[](1);
+        tips[0] = tip;
+
+        ReceivedItem[] memory consideration = new ReceivedItem[](params.consideration.length + 1);
+        for (uint256 i = 0; i < params.consideration.length; ++i) {
+            consideration[i] = params.consideration[i];
+        }
+        consideration[params.consideration.length] = tip;
+        params.consideration = consideration;
+        return (params, tips);
     }
 
     // ==================== Constructor ====================
@@ -509,9 +572,39 @@ contract OTCRegistryTest is Test {
         zone.registerOrder(reg);
     }
 
-    function test_registerOrder_revertsNonCanonicalZoneHash() public {
+    function test_registerOrder_revertsInvalidZoneHashVersion() public {
         OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
         components.zoneHash = bytes32((uint256(1) << 160) | uint256(uint160(taker)));
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidZoneHash.selector, components.zoneHash));
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsReservedZoneHashBits() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.zoneHash = bytes32(uint256(1) << 200 | uint256(components.zoneHash));
+        bytes32 orderHash = _orderHash(components);
+        OrderRegistration memory reg = OrderRegistration({
+            components: components,
+            seaportSignature: SEAPORT_SIG,
+            signature: _sign(makerPk, orderHash, SEAPORT_SIG, ""),
+            memo: ""
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidZoneHash.selector, components.zoneHash));
+        zone.registerOrder(reg);
+    }
+
+    function test_registerOrder_revertsMismatchedZoneHashConsiderationCount() public {
+        OrderComponents memory components = _buildComponents(maker, taker, DEFAULT_END_TIME);
+        components.zoneHash = _encodeZoneHash(taker, 2);
         bytes32 orderHash = _orderHash(components);
         OrderRegistration memory reg = OrderRegistration({
             components: components,
@@ -1209,7 +1302,7 @@ contract OTCRegistryTest is Test {
     }
 
     function test_authorizeOrder_restrictedTaker_authorized() public {
-        bytes32 zoneHash = bytes32(uint256(uint160(taker)));
+        bytes32 zoneHash = _encodeZoneHash(taker, 1);
         ZoneParameters memory params = _zoneParams(zoneHash);
         params.fulfiller = taker;
 
@@ -1219,7 +1312,7 @@ contract OTCRegistryTest is Test {
     }
 
     function test_authorizeOrder_restrictedTaker_unauthorized() public {
-        bytes32 zoneHash = bytes32(uint256(uint160(taker)));
+        bytes32 zoneHash = _encodeZoneHash(taker, 1);
         ZoneParameters memory params = _zoneParams(zoneHash);
         params.fulfiller = stranger;
 
@@ -1326,12 +1419,129 @@ contract OTCRegistryTest is Test {
             orderHashes: orderHashes,
             startTime: block.timestamp,
             endTime: block.timestamp + 30 days,
-            zoneHash: bytes32(0)
+            zoneHash: registered.zoneHash
         });
+
+        vm.prank(seaport);
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidConsiderationCount.selector, 0, 1));
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsExtraDataWithoutTips() public {
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        params.extraData = abi.encode(block.timestamp + 1 days, hex"1234");
+
+        vm.prank(seaport);
+        vm.expectRevert(OTCRegistry.UnexpectedExtraData.selector);
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsTipWithoutAuthorization() public {
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        (params,) = _appendSingleTip(params, ReceivedItem(ItemType.ERC20, usdc, 0, 5e6, payable(stranger)));
+
+        vm.prank(seaport);
+        vm.expectRevert(OTCRegistry.MissingTipAuthorization.selector);
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_validWhitelistedERC20Tip() public {
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        ReceivedItem memory tip = ReceivedItem(ItemType.ERC20, usdc, 0, 5e6, payable(stranger));
+        ReceivedItem[] memory tips;
+        (params, tips) = _appendSingleTip(params, tip);
+        params.fulfiller = taker;
+        uint256 deadline = block.timestamp + 1 days;
+        params.extraData = abi.encode(deadline, _signTip(takerPk, params.orderHash, taker, tips, deadline));
 
         vm.prank(seaport);
         bytes4 result = zone.validateOrder(params);
         assertEq(result, zone.validateOrder.selector);
+    }
+
+    function test_validateOrder_validNativeTip() public {
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        ReceivedItem memory tip = ReceivedItem(ItemType.NATIVE, address(0), 0, 1 ether, payable(stranger));
+        ReceivedItem[] memory tips;
+        (params, tips) = _appendSingleTip(params, tip);
+        params.fulfiller = taker;
+        uint256 deadline = block.timestamp + 1 days;
+        params.extraData = abi.encode(deadline, _signTip(takerPk, params.orderHash, taker, tips, deadline));
+
+        vm.prank(seaport);
+        bytes4 result = zone.validateOrder(params);
+        assertEq(result, zone.validateOrder.selector);
+    }
+
+    function test_validateOrder_revertsExpiredTipAuthorization() public {
+        vm.warp(100);
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        ReceivedItem memory tip = ReceivedItem(ItemType.ERC20, usdc, 0, 5e6, payable(stranger));
+        ReceivedItem[] memory tips;
+        (params, tips) = _appendSingleTip(params, tip);
+        params.fulfiller = taker;
+        uint256 deadline = block.timestamp - 1;
+        params.extraData = abi.encode(deadline, _signTip(takerPk, params.orderHash, taker, tips, deadline));
+
+        vm.prank(seaport);
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.TipAuthorizationExpired.selector, block.timestamp, deadline));
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsInvalidTipSignature() public {
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        ReceivedItem memory tip = ReceivedItem(ItemType.ERC20, usdc, 0, 5e6, payable(stranger));
+        ReceivedItem[] memory tips;
+        (params, tips) = _appendSingleTip(params, tip);
+        params.fulfiller = taker;
+        uint256 deadline = block.timestamp + 1 days;
+        params.extraData = abi.encode(deadline, _signTip(makerPk, params.orderHash, taker, tips, deadline));
+
+        vm.prank(seaport);
+        vm.expectRevert(OTCRegistry.InvalidTipSignature.selector);
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsNFTTip() public {
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        ReceivedItem memory tip = ReceivedItem(ItemType.ERC721, erc721, 1, 1, payable(stranger));
+        ReceivedItem[] memory tips;
+        (params, tips) = _appendSingleTip(params, tip);
+        params.fulfiller = taker;
+        uint256 deadline = block.timestamp + 1 days;
+        params.extraData = abi.encode(deadline, _signTip(takerPk, params.orderHash, taker, tips, deadline));
+
+        vm.prank(seaport);
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidItemType.selector, ItemType.ERC721));
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsNonWhitelistedERC20Tip() public {
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        ReceivedItem memory tip = ReceivedItem(ItemType.ERC20, fakeToken, 0, 5e6, payable(stranger));
+        ReceivedItem[] memory tips;
+        (params, tips) = _appendSingleTip(params, tip);
+        params.fulfiller = taker;
+        uint256 deadline = block.timestamp + 1 days;
+        params.extraData = abi.encode(deadline, _signTip(takerPk, params.orderHash, taker, tips, deadline));
+
+        vm.prank(seaport);
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.TokenNotWhitelisted.selector, fakeToken));
+        zone.validateOrder(params);
+    }
+
+    function test_validateOrder_revertsERC20TipWithIdentifier() public {
+        ZoneParameters memory params = _registeredZoneParams(address(0));
+        ReceivedItem memory tip = ReceivedItem(ItemType.ERC20, usdc, 1, 5e6, payable(stranger));
+        ReceivedItem[] memory tips;
+        (params, tips) = _appendSingleTip(params, tip);
+        params.fulfiller = taker;
+        uint256 deadline = block.timestamp + 1 days;
+        params.extraData = abi.encode(deadline, _signTip(takerPk, params.orderHash, taker, tips, deadline));
+
+        vm.prank(seaport);
+        vm.expectRevert(abi.encodeWithSelector(OTCRegistry.InvalidERC20Identifier.selector, uint256(1)));
+        zone.validateOrder(params);
     }
 
     // ==================== ERC-165 ====================

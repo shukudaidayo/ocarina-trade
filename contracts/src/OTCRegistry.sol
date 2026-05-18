@@ -11,7 +11,8 @@ import {
     OrderParameters,
     Order,
     OfferItem,
-    ConsiderationItem
+    ConsiderationItem,
+    ReceivedItem
 } from "seaport-types/lib/ConsiderationStructs.sol";
 import {ItemType, OrderType} from "seaport-types/lib/ConsiderationEnums.sol";
 import {EIP712} from "solady/utils/EIP712.sol";
@@ -71,10 +72,27 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     error DuplicateWhitelistToken(address token);
     error EmptyOffer();
     error EmptyConsideration();
+    error InvalidConsiderationCount(uint256 providedCount, uint256 originalCount);
+    error UnexpectedExtraData();
+    error MissingTipAuthorization();
+    error TipAuthorizationExpired(uint256 currentTime, uint256 deadline);
+    error InvalidTipSignature();
 
     event OrderRegistered(
         bytes32 indexed orderHash, address indexed maker, address indexed taker, OrderComponents components, string memo
     );
+
+    uint256 private constant _TAKER_MASK = (uint256(1) << 160) - 1;
+    uint256 private constant _ZONE_HASH_VERSION = 1;
+    uint256 private constant _ZONE_HASH_VERSION_SHIFT = 192;
+    uint256 private constant _ORIGINAL_CONSIDERATION_COUNT_SHIFT = 160;
+    uint256 private constant _ORIGINAL_CONSIDERATION_COUNT_MASK = (uint256(1) << 32) - 1;
+    uint256 private constant _ZONE_HASH_RESERVED_MASK = type(uint256).max << 200;
+
+    bytes32 private constant _TIP_ITEM_TYPEHASH =
+        keccak256("TipItem(uint8 itemType,address token,uint256 identifier,uint256 amount,address recipient)");
+    bytes32 private constant _TIP_AUTHORIZATION_TYPEHASH =
+        keccak256("TipAuthorization(bytes32 orderHash,address fulfiller,bytes32 tipsHash,uint256 deadline)");
 
     constructor(address[] memory _tokens, address _seaport) {
         if (_seaport == address(0) || _seaport.code.length == 0) revert InvalidSeaport(_seaport);
@@ -136,7 +154,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         uint256 considerationCount = reg.components.consideration.length;
         if (offerCount == 0) revert EmptyOffer();
         if (considerationCount == 0) revert EmptyConsideration();
-        _checkZoneHash(reg.components.zoneHash);
+        _checkZoneHash(reg.components.zoneHash, considerationCount);
         uint256 currentCounter = SeaportInterface(seaport).getCounter(reg.components.offerer);
         if (reg.components.counter != currentCounter) {
             revert InvalidCounter(reg.components.counter, currentCounter);
@@ -217,7 +235,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         });
         if (!SeaportInterface(seaport).validate(orders)) revert SeaportValidationFailed();
 
-        address taker = address(uint160(uint256(reg.components.zoneHash)));
+        address taker = _decodeTaker(reg.components.zoneHash);
 
         emit OrderRegistered(orderHash, maker, taker, reg.components, reg.memo);
     }
@@ -226,7 +244,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
     function authorizeOrder(ZoneParameters calldata zoneParameters) external view returns (bytes4) {
         if (msg.sender != seaport) revert OnlySeaport(msg.sender);
 
-        address allowedTaker = address(uint160(uint256(zoneParameters.zoneHash)));
+        address allowedTaker = _decodeTaker(zoneParameters.zoneHash);
         if (allowedTaker != address(0) && zoneParameters.fulfiller != allowedTaker) {
             revert UnauthorizedTaker(zoneParameters.fulfiller, allowedTaker);
         }
@@ -249,11 +267,21 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         }
 
         uint256 considerationCount = zoneParameters.consideration.length;
+        uint256 originalConsiderationCount = _decodeOriginalConsiderationCount(zoneParameters.zoneHash);
+        if (considerationCount < originalConsiderationCount) {
+            revert InvalidConsiderationCount(considerationCount, originalConsiderationCount);
+        }
         for (uint256 i = 0; i < considerationCount;) {
             _checkERC20Whitelist(zoneParameters.consideration[i].itemType, zoneParameters.consideration[i].token);
             unchecked {
                 ++i;
             }
+        }
+
+        if (considerationCount == originalConsiderationCount) {
+            if (zoneParameters.extraData.length != 0) revert UnexpectedExtraData();
+        } else {
+            _validateTips(zoneParameters, originalConsiderationCount, considerationCount);
         }
 
         return this.validateOrder.selector;
@@ -284,8 +312,76 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         if (recipient != offerer) revert InvalidRecipient(recipient);
     }
 
-    function _checkZoneHash(bytes32 zoneHash) internal pure {
-        if (uint256(zoneHash) >> 160 != 0) revert InvalidZoneHash(zoneHash);
+    function _checkZoneHash(bytes32 zoneHash, uint256 considerationCount) internal pure {
+        uint256 raw = uint256(zoneHash);
+        if ((raw & _ZONE_HASH_RESERVED_MASK) != 0) revert InvalidZoneHash(zoneHash);
+        if ((raw >> _ZONE_HASH_VERSION_SHIFT) & 0xff != _ZONE_HASH_VERSION) revert InvalidZoneHash(zoneHash);
+        if (_decodeOriginalConsiderationCount(zoneHash) != considerationCount) revert InvalidZoneHash(zoneHash);
+    }
+
+    function _decodeTaker(bytes32 zoneHash) internal pure returns (address) {
+        return address(uint160(uint256(zoneHash) & _TAKER_MASK));
+    }
+
+    function _decodeOriginalConsiderationCount(bytes32 zoneHash) internal pure returns (uint256) {
+        return (uint256(zoneHash) >> _ORIGINAL_CONSIDERATION_COUNT_SHIFT) & _ORIGINAL_CONSIDERATION_COUNT_MASK;
+    }
+
+    function _validateTips(
+        ZoneParameters calldata zoneParameters,
+        uint256 originalConsiderationCount,
+        uint256 considerationCount
+    ) internal view {
+        if (zoneParameters.extraData.length == 0) revert MissingTipAuthorization();
+        (uint256 deadline, bytes memory signature) = abi.decode(zoneParameters.extraData, (uint256, bytes));
+        if (block.timestamp > deadline) revert TipAuthorizationExpired(block.timestamp, deadline);
+
+        bytes32 tipsHash = _hashTips(zoneParameters.consideration, originalConsiderationCount, considerationCount);
+        bytes32 structHash = keccak256(
+            abi.encode(
+                _TIP_AUTHORIZATION_TYPEHASH, zoneParameters.orderHash, zoneParameters.fulfiller, tipsHash, deadline
+            )
+        );
+        bytes32 digest = _hashTypedData(structHash);
+        if (!SignatureCheckerLib.isValidSignatureNow(zoneParameters.fulfiller, digest, signature)) {
+            revert InvalidTipSignature();
+        }
+    }
+
+    function _hashTips(ReceivedItem[] calldata consideration, uint256 start, uint256 end)
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32[] memory tipHashes = new bytes32[](end - start);
+        for (uint256 i = start; i < end;) {
+            ReceivedItem calldata tip = consideration[i];
+            _checkTipItem(tip);
+            tipHashes[i - start] = keccak256(
+                abi.encode(_TIP_ITEM_TYPEHASH, tip.itemType, tip.token, tip.identifier, tip.amount, tip.recipient)
+            );
+            unchecked {
+                ++i;
+            }
+        }
+        return keccak256(abi.encodePacked(tipHashes));
+    }
+
+    function _checkTipItem(ReceivedItem calldata tip) internal view {
+        if (tip.amount == 0) revert MissingItemAmount(tip.itemType, tip.token, tip.identifier);
+
+        if (tip.itemType == ItemType.NATIVE) {
+            if (tip.token != address(0) || tip.identifier != 0) revert InvalidNativeItem(tip.token, tip.identifier);
+            return;
+        }
+
+        if (tip.itemType == ItemType.ERC20) {
+            if (tip.identifier != 0) revert InvalidERC20Identifier(tip.identifier);
+            _checkWhitelist(tip.token);
+            return;
+        }
+
+        revert InvalidItemType(tip.itemType);
     }
 
     function _checkItem(ItemType itemType, address token, uint256 identifier, uint256 amount) internal view {

@@ -61,6 +61,7 @@ contract OTCRegistryInvariantHandler is Test {
 
     bytes32[] public registeredHashes;
     mapping(bytes32 => bool) public seenRegistered;
+    mapping(bytes32 => bytes32) public registeredZoneHash;
 
     constructor(OTCRegistry _zone, InvariantMockSeaport _seaport, address _erc721, uint256 _makerPk) {
         zone = _zone;
@@ -85,6 +86,7 @@ contract OTCRegistryInvariantHandler is Test {
 
         zone.registerOrder(reg);
         seenRegistered[orderHash] = true;
+        registeredZoneHash[orderHash] = components.zoneHash;
         registeredHashes.push(orderHash);
         assertTrue(zone.registered(orderHash));
     }
@@ -124,6 +126,7 @@ contract OTCRegistryInvariantHandler is Test {
 
         bytes32 orderHash = registeredHashes[index % registeredHashes.length];
         ZoneParameters memory params = _zoneParams(orderHash);
+        params.zoneHash = registeredZoneHash[orderHash];
 
         vm.prank(address(seaport));
         bytes4 result = zone.validateOrder(params);
@@ -167,7 +170,7 @@ contract OTCRegistryInvariantHandler is Test {
             recipient: payable(maker)
         });
 
-        bytes32 zoneHash = taker != address(0) ? bytes32(uint256(uint160(taker))) : bytes32(0);
+        bytes32 zoneHash = _encodeZoneHash(taker, consideration.length);
 
         return OrderComponents({
             offerer: maker,
@@ -225,8 +228,12 @@ contract OTCRegistryInvariantHandler is Test {
             orderHashes: orderHashes,
             startTime: block.timestamp,
             endTime: block.timestamp + 30 days,
-            zoneHash: bytes32(0)
+            zoneHash: _encodeZoneHash(address(0), consideration.length)
         });
+    }
+
+    function _encodeZoneHash(address taker, uint256 originalConsiderationCount) internal pure returns (bytes32) {
+        return bytes32(uint256(uint160(taker)) | (originalConsiderationCount << 160) | (uint256(1) << 192));
     }
 }
 

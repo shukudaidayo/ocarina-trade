@@ -4,6 +4,36 @@ import { ItemType, OrderType } from '@opensea/seaport-js/lib/constants'
 import { CHAINS, SEAPORT_ADDRESS, ZONE_ADDRESSES, ZONE_DEPLOY_BLOCKS, ZONE_ABI, WHITELISTED_ERC20 } from './constants'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+const ZONE_HASH_VERSION = 1n
+const TAKER_MASK = (1n << 160n) - 1n
+const COUNT_MASK = (1n << 32n) - 1n
+const VERSION_MASK = (1n << 8n) - 1n
+
+function encodeZoneHash(taker, originalConsiderationCount) {
+  const takerValue = taker && taker !== ZERO_ADDRESS ? BigInt(taker) : 0n
+  const count = BigInt(originalConsiderationCount)
+  const packed = takerValue | (count << 160n) | (ZONE_HASH_VERSION << 192n)
+  return `0x${packed.toString(16).padStart(64, '0')}`
+}
+
+function decodeZoneHash(zoneHash) {
+  const packed = BigInt(zoneHash)
+  return {
+    taker: `0x${(packed & TAKER_MASK).toString(16).padStart(40, '0')}`,
+    originalConsiderationCount: Number((packed >> 160n) & COUNT_MASK),
+    version: Number((packed >> 192n) & VERSION_MASK),
+    reserved: packed >> 200n,
+  }
+}
+
+function zoneHashMatchesOrder(parameters, taker) {
+  const metadata = decodeZoneHash(parameters.zoneHash)
+  return metadata.version === Number(ZONE_HASH_VERSION) &&
+    metadata.reserved === 0n &&
+    metadata.originalConsiderationCount === parameters.consideration.length &&
+    metadata.taker.toLowerCase() === taker.toLowerCase()
+}
+
 const SEAPORT_FULFILL_ABI = [
   'function fulfillOrder((tuple(address offerer,address zone,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)[] offer,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 totalOriginalConsiderationItems) parameters,bytes signature) order,bytes32 fulfillerConduitKey) payable returns (bool fulfilled)',
   'function fulfillAdvancedOrder((tuple(address offerer,address zone,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)[] offer,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 totalOriginalConsiderationItems) parameters,bytes signature,bytes extraData,uint120 numerator,uint120 denominator) advancedOrder,tuple(uint256 orderIndex,uint8 side,uint256 index,uint256 identifier,bytes32[] criteriaProof)[] criteriaResolvers,bytes32 fulfillerConduitKey,address recipient) payable returns (bool fulfilled)',
@@ -154,12 +184,9 @@ export async function createOrder(rawProvider, chainId, {
 
   const seaport = await getSeaport(rawProvider)
 
-  const zoneHash = taker && taker !== ZERO_ADDRESS
-    ? zeroPadValue(taker, 32)
-    : ZeroHash
-
   const offer = makerAssets.map((a) => toSeaportOfferItem(a, chainId))
   const consideration = takerAssets.map((a) => toSeaportConsiderationItem(a, makerAddress, chainId))
+  const zoneHash = encodeZoneHash(taker, consideration.length)
 
   const endTime = expiration
     ? Math.floor(new Date(expiration).getTime() / 1000).toString()
@@ -271,6 +298,8 @@ function verifyAndExtract(parsedOrLog) {
       parameters: componentsFromEvent(args.components),
       signature: '0x',
     }
+    if (!zoneHashMatchesOrder(order.parameters, args.taker)) return null
+
     return {
       orderHash: args.orderHash,
       maker: args.maker,

@@ -174,11 +174,15 @@ contract OTCRegistryForkTest is Test {
             orderType: OrderType.FULL_RESTRICTED,
             startTime: block.timestamp,
             endTime: block.timestamp + 30 days,
-            zoneHash: bytes32(uint256(uint160(allowedTaker))),
+            zoneHash: _encodeZoneHash(allowedTaker, consideration.length),
             salt: salt,
             conduitKey: bytes32(0),
             counter: seaport.getCounter(maker)
         });
+    }
+
+    function _encodeZoneHash(address allowedTaker, uint256 originalConsiderationCount) internal pure returns (bytes32) {
+        return bytes32(uint256(uint160(allowedTaker)) | (originalConsiderationCount << 160) | (uint256(1) << 192));
     }
 
     function _order(OrderComponents memory components, bytes memory signature) internal pure returns (Order memory) {
