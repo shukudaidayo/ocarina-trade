@@ -36,10 +36,10 @@ For NFT contracts, an offer or consideration item can target **Any Token** from 
 
 | Network | Address |
 |---|---|
-| Ethereum | [`0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc`](https://etherscan.io/address/0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc) |
-| Base | [`0x07C00000090AdB1D14b093C1A6b40135779af27C`](https://basescan.org/address/0x07C00000090AdB1D14b093C1A6b40135779af27C) |
-| Polygon | [`0x07C000000b63fEe6aC08B91ad7aD3d999b28d740`](https://polygonscan.com/address/0x07C000000b63fEe6aC08B91ad7aD3d999b28d740) |
-| Ink | [`0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52`](https://explorer.inkonchain.com/address/0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52) |
+| Ethereum | [`0x07C0000007b4B558e2fCd47F47A573413B0Caf7C`](https://etherscan.io/address/0x07C0000007b4B558e2fCd47F47A573413B0Caf7C) |
+| Base | [`0x07C00000057b66A84004adD3B0f9164E744354CB`](https://basescan.org/address/0x07C00000057b66A84004adD3B0f9164E744354CB) |
+| Polygon | [`0x07C000000e10b73C0506f36BA75E50a5D3147061`](https://polygonscan.com/address/0x07C000000e10b73C0506f36BA75E50a5D3147061) |
+| Ink | [`0x07C00000025CF03243E6fde1BE86af60D12fbF8f`](https://explorer.inkonchain.com/address/0x07C00000025CF03243E6fde1BE86af60D12fbF8f) |
 
 ## Trust model
 

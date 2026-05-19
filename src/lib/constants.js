@@ -2,6 +2,7 @@ export const IPFS_GATEWAY = 'https://ipfs.io/ipfs/'
 
 export const CHAINS = {
   1: { name: 'Ethereum', nativeSymbol: 'ETH', rpcUrl: 'https://ethereum-rpc.publicnode.com', blockscoutApi: 'https://eth.blockscout.com/api' },
+  11155111: { name: 'Sepolia', nativeSymbol: 'ETH', rpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com', blockscoutApi: 'https://eth-sepolia.blockscout.com/api' },
   8453: { name: 'Base', nativeSymbol: 'ETH', rpcUrl: 'https://base-rpc.publicnode.com', blockscoutApi: 'https://base.blockscout.com/api' },
   137: { name: 'Polygon', nativeSymbol: 'POL', rpcUrl: 'https://polygon-bor-rpc.publicnode.com', blockscoutApi: 'https://polygon.blockscout.com/api' },
   57073: { name: 'Ink', nativeSymbol: 'ETH', rpcUrl: 'https://rpc-gel.inkonchain.com', blockscoutApi: 'https://explorer.inkonchain.com/api' },
@@ -13,18 +14,20 @@ export const OCARINA_SUPPORT_ADDRESS = '0x9a659894e5D115846767dB0e1685744c452E7a
 
 // OTCRegistry contract addresses per chain
 export const ZONE_ADDRESSES = {
-  1: '0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc',
-  8453: '0x07C00000090AdB1D14b093C1A6b40135779af27C',
-  137: '0x07C000000b63fEe6aC08B91ad7aD3d999b28d740',
-  57073: '0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52',
+  1: '0x07C0000007b4B558e2fCd47F47A573413B0Caf7C',
+  11155111: '0xfc9E05BF732FB5Aeee7e270928F349Ed3FA3cc0D',
+  8453: '0x07C00000057b66A84004adD3B0f9164E744354CB',
+  137: '0x07C000000e10b73C0506f36BA75E50a5D3147061',
+  57073: '0x07C00000025CF03243E6fde1BE86af60D12fbF8f',
 }
 
 // Block number at or before OTCRegistry deployment — used as fromBlock for event queries
 export const ZONE_DEPLOY_BLOCKS = {
-  1: 24694574,
-  8453: 43637380,
-  137: 84472380,
-  57073: 41165529,
+  1: 25125826,
+  11155111: 10876408,
+  8453: 46185560,
+  137: 87095296,
+  57073: 45663169,
 }
 
 // Whitelisted ERC-20 tokens per chain
@@ -35,6 +38,10 @@ export const WHITELISTED_ERC20 = {
     '0xdAC17F958D2ee523a2206206994597C13D831ec7': { symbol: 'USDT', decimals: 6 },
     '0xdC035D45d973E3EC169d2276DDab16f1e407384F': { symbol: 'USDS', decimals: 18 },
     '0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c': { symbol: 'EURC', decimals: 6 },
+  },
+  11155111: {
+    '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14': { symbol: 'WETH', decimals: 18 },
+    '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238': { symbol: 'USDC', decimals: 6 },
   },
   8453: {
     '0x4200000000000000000000000000000000000006': { symbol: 'WETH', decimals: 18 },
@@ -56,6 +63,7 @@ export const WHITELISTED_ERC20 = {
 
 export const USDC_ADDRESSES = {
   1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+  11155111: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
   8453: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
   137: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
   57073: '0x2D270e6886d130D724215A266106e6832161EAEd',

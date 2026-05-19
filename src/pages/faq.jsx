@@ -9,6 +9,13 @@ const ZONE_CHAINS = [
   { chainId: 57073, name: 'Ink' },
 ]
 
+const DEPRECATED_OTCZONE_ADDRESSES = {
+  1: '0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc',
+  8453: '0x07C00000090AdB1D14b093C1A6b40135779af27C',
+  137: '0x07C000000b63fEe6aC08B91ad7aD3d999b28d740',
+  57073: '0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52',
+}
+
 const questions = [
   {
     id: 'what-is',
@@ -23,7 +30,7 @@ const questions = [
   {
     id: 'audit',
     q: 'Is the Ocarina smart contract audited?',
-    a: ({ zoneLinks }) => <><p>Seaport contracts are <a href="https://github.com/trailofbits/publications/blob/master/reviews/SeaportProtocol.pdf" target="_blank" rel="noopener noreferrer">fully audited</a>.</p><p>Besides Seaport, Ocarina relies on a small smart contract, OTCRegistry, to post offers onchain and limit which cash tokens can be included in Ocarina offers. Although this contract hasn't been audited, it isn't in the flow of assets — even if it does somehow get rekt, your assets are safe.</p><p>The OTCRegistry contract is deployed at the addresses below:</p>{zoneLinks}</>,
+    a: ({ zoneLinks, deprecatedZoneLinks }) => <><p>Seaport contracts are <a href="https://github.com/trailofbits/publications/blob/master/reviews/SeaportProtocol.pdf" target="_blank" rel="noopener noreferrer">fully audited</a>.</p><p>Besides Seaport, Ocarina relies on a small smart contract, OTCRegistry, to post offers onchain and limit which cash tokens can be included in Ocarina offers. Although this contract hasn't been audited, it isn't in the flow of assets — even if it does somehow get rekt, your assets are safe.</p><p>The current OTCRegistry contract is deployed at the addresses below:</p>{zoneLinks}<p className="faq-subhead">Deprecated OTCZone addresses:</p>{deprecatedZoneLinks}</>,
   },
   {
     id: 'assets',
@@ -114,6 +121,16 @@ export default function FAQ() {
     </span>
   )
 
+  const deprecatedZoneLinks = (
+    <span className="faq-zone-links faq-zone-links-deprecated">
+      {ZONE_CHAINS.map(({ chainId, name }) => (
+        <span key={chainId}>
+          {name}: <a href={getEtherscanUrl(chainId, DEPRECATED_OTCZONE_ADDRESSES[chainId])} target="_blank" rel="noopener noreferrer"><code>{DEPRECATED_OTCZONE_ADDRESSES[chainId]}</code></a>
+        </span>
+      ))}
+    </span>
+  )
+
   return (
     <div className="page faq">
       <h1>FAQ</h1>
@@ -140,7 +157,7 @@ export default function FAQ() {
               className="faq-item"
             >
               <h2>{q}</h2>
-              <div className="faq-answer">{typeof a === 'function' ? a({ zoneLinks }) : a}</div>
+              <div className="faq-answer">{typeof a === 'function' ? a({ zoneLinks, deprecatedZoneLinks }) : a}</div>
             </section>
           ))}
         </div>

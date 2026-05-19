@@ -247,11 +247,22 @@ footer {
   margin-bottom: 0;
 }
 
+.faq-answer .faq-subhead {
+  margin-top: 0.85rem;
+  margin-bottom: 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
 .faq-zone-links {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
   margin-top: 0.5rem;
+}
+
+.faq-zone-links-deprecated {
+  opacity: 0.75;
 }
 
 .faq-zone-links code {

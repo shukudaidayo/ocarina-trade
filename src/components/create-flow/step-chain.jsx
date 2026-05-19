@@ -5,6 +5,7 @@ import { ZONE_ADDRESSES, CHAINS } from '../../lib/constants'
 
 const CHAIN_LOGOS = {
   1: new URL('../../assets/tokens/eth.png', import.meta.url).href,
+  11155111: new URL('../../assets/tokens/eth.png', import.meta.url).href,
   8453: new URL('../../assets/chains/base.jpg', import.meta.url).href,
   137: new URL('../../assets/tokens/pol.png', import.meta.url).href,
   57073: new URL('../../assets/chains/ink.png', import.meta.url).href,
@@ -12,6 +13,7 @@ const CHAIN_LOGOS = {
 
 const CHAIN_DESCRIPTIONS = {
   1: 'OG NFTs and ENS names',
+  11155111: 'Testnet offers',
   8453: 'Beezie, Slab, and RIP.FUN',
   137: 'Courtyard collectibles',
   57073: 'Select Phygitals collectibles',
@@ -21,6 +23,9 @@ function getSwapUrl(chainId) {
   const symbol = CHAINS[chainId]?.nativeSymbol || 'ETH'
   if (chainId === 57073) {
     return { url: 'https://velodrome.finance/swap?to=eth&chain1=57073', label: `Buy ${symbol} on Velodrome` }
+  }
+  if (chainId === 11155111) {
+    return { url: 'https://cloud.google.com/application/web3/faucet/ethereum/sepolia', label: `Get Sepolia ${symbol}` }
   }
   const slugs = { 1: 'mainnet', 8453: 'base', 137: 'polygon' }
   return { url: `https://app.uniswap.org/swap?chain=${slugs[chainId]}&outputCurrency=NATIVE`, label: `Buy ${symbol} on Uniswap` }

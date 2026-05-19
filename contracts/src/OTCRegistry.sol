@@ -82,6 +82,8 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         bytes32 indexed orderHash, address indexed maker, address indexed taker, OrderComponents components, string memo
     );
 
+    // zoneHash layout: low 160 bits = allowed taker, bits 160..191 =
+    // original consideration count, bits 192..199 = version, bits 200..255 reserved.
     uint256 private constant _TAKER_MASK = (uint256(1) << 160) - 1;
     uint256 private constant _ZONE_HASH_VERSION = 1;
     uint256 private constant _ZONE_HASH_VERSION_SHIFT = 192;
@@ -354,6 +356,7 @@ contract OTCRegistry is ZoneInterface, EIP712 {
         view
         returns (bytes32)
     {
+        // EIP-712 array hash for TipItem[]: hash each struct, then hash the packed hashes.
         bytes32[] memory tipHashes = new bytes32[](end - start);
         for (uint256 i = start; i < end;) {
             ReceivedItem calldata tip = consideration[i];
