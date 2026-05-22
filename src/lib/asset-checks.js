@@ -3,6 +3,7 @@ import { CHAINS, SEAPORT_ADDRESS } from './constants'
 import { ItemType } from '@opensea/seaport-js/lib/constants'
 
 const ERC721_ABI = [
+  'function balanceOf(address owner) view returns (uint256)',
   'function ownerOf(uint256 tokenId) view returns (address)',
   'function getApproved(uint256 tokenId) view returns (address)',
   'function isApprovedForAll(address owner, address operator) view returns (bool)',
@@ -15,6 +16,14 @@ const ERC20_ABI = [
   'function balanceOf(address account) view returns (uint256)',
   'function allowance(address owner, address spender) view returns (uint256)',
 ]
+
+function itemAmount(asset, fallback = '0') {
+  return BigInt(asset.startAmount ?? asset.amount ?? fallback)
+}
+
+function itemIdentifier(asset) {
+  return String(asset.identifierOrCriteria ?? asset.tokenId ?? '0')
+}
 
 /**
  * Check whether an address holds all the given assets.
@@ -60,6 +69,95 @@ export async function checkHoldings(chainId, address, assets) {
       return { held: false, reason: 'Unable to verify' }
     }
   }))
+}
+
+/**
+ * Check maker holdings for the /offers browse page.
+ * Criteria-based items are treated conservatively: exact failures become missing,
+ * wildcard ERC-721 criteria can be checked by collection balance, and anything
+ * that cannot be verified generically is left unknown instead of hidden.
+ */
+export async function checkMakerOfferAvailability(chainId, address, assets) {
+  const chain = CHAINS[chainId]
+  if (!chain) return { status: 'unknown', reason: 'Unsupported chain' }
+  const provider = new JsonRpcProvider(chain.rpcUrl)
+  const erc721CriteriaNeeds = new Map()
+  let hasUnknown = false
+
+  for (const asset of assets) {
+    const itemType = Number(asset.itemType)
+
+    if (itemType === ItemType.ERC721_WITH_CRITERIA) {
+      if (itemIdentifier(asset) === '0' && asset.token) {
+        const token = asset.token.toLowerCase()
+        erc721CriteriaNeeds.set(token, (erc721CriteriaNeeds.get(token) || 0n) + itemAmount(asset, '1'))
+      } else {
+        hasUnknown = true
+      }
+      continue
+    }
+
+    if (itemType === ItemType.ERC1155_WITH_CRITERIA) {
+      hasUnknown = true
+      continue
+    }
+
+    try {
+      if (itemType === ItemType.NATIVE) {
+        const balance = await provider.getBalance(address)
+        if (balance < itemAmount(asset)) {
+          return { status: 'missing', reason: 'Insufficient ETH balance' }
+        }
+        continue
+      }
+
+      if (itemType === ItemType.ERC20) {
+        const token = new Contract(asset.token, ERC20_ABI, provider)
+        const balance = await token.balanceOf(address)
+        if (balance < itemAmount(asset)) {
+          return { status: 'missing', reason: 'Insufficient token balance' }
+        }
+        continue
+      }
+
+      if (itemType === ItemType.ERC721) {
+        const token = new Contract(asset.token, ERC721_ABI, provider)
+        const owner = await token.ownerOf(itemIdentifier(asset))
+        if (owner.toLowerCase() !== address.toLowerCase()) {
+          return { status: 'missing', reason: 'NFT no longer held' }
+        }
+        continue
+      }
+
+      if (itemType === ItemType.ERC1155) {
+        const token = new Contract(asset.token, ERC1155_ABI, provider)
+        const balance = await token.balanceOf(address, itemIdentifier(asset))
+        if (balance < itemAmount(asset, '1')) {
+          return { status: 'missing', reason: 'Token no longer held' }
+        }
+        continue
+      }
+
+      hasUnknown = true
+    } catch {
+      hasUnknown = true
+    }
+  }
+
+  for (const [tokenAddress, needed] of erc721CriteriaNeeds.entries()) {
+    try {
+      const token = new Contract(tokenAddress, ERC721_ABI, provider)
+      const balance = await token.balanceOf(address)
+      if (balance < needed) {
+        return { status: 'missing', reason: 'Insufficient collection balance' }
+      }
+    } catch {
+      hasUnknown = true
+    }
+  }
+
+  if (hasUnknown) return { status: 'unknown', reason: 'Unable to fully verify maker holdings' }
+  return { status: 'available' }
 }
 
 /**

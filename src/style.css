@@ -1180,6 +1180,22 @@ footer {
   text-decoration: none;
 }
 
+.offer-card-invalid {
+  opacity: 0.5;
+}
+
+.offer-card-invalid:hover {
+  border-color: var(--border);
+}
+
+.offer-card-warning {
+  display: block;
+  margin-top: 0.35rem;
+  color: #e55;
+  font-size: 0.7rem;
+  line-height: 1.2;
+}
+
 .offer-memo {
   font-style: italic;
   unicode-bidi: plaintext;

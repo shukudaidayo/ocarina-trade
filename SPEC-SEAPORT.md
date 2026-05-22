@@ -148,7 +148,7 @@ ERC-20 enforcement happens at three layers:
 
 #### Approvals
 
-Users approve the Seaport contract directly (or a conduit) to transfer their assets. Since we use `conduitKey: bytes32(0)`, approvals go directly to the Seaport contract address.
+Users approve the Seaport contract directly to transfer their assets. Since Ocarina orders use `conduitKey: bytes32(0)`, approvals go directly to the Seaport contract address.
 
 - ERC-721: `setApprovalForAll(seaportAddress, true)`
 - ERC-1155: `setApprovalForAll(seaportAddress, true)`
@@ -164,14 +164,19 @@ Multiple wildcard ERC-721 items from the same contract are allowed by adding mul
 
 #### Optional Fulfillment Tips
 
-Seaport allows a fulfiller to append extra consideration items at fulfillment time. Ocarina permits this only for explicit, fulfiller-authorized cash tips. Tips are optional and are never part of the maker's signed order terms.
+Seaport allows a fulfiller to append extra consideration items at fulfillment time. OTCRegistry permits this only for explicit, fulfiller-authorized cash tips. Tips are optional and are never part of the maker's signed order terms.
+
+There is a distinction between the protocol rule and this site's UI:
+
+- **Protocol / registry**: Any frontend may append native or whitelisted ERC-20 tip items to any recipient, but only if the fulfiller signs the exact appended tip set. NFT tips, criteria tips, malformed cash tips, non-whitelisted ERC-20 tips, and unsigned appended consideration are rejected by `validateOrder`.
+- **Current ocarina.trade site**: The only exposed tip UI is an optional "Support Ocarina - $5 USDC" checkbox on chains with a configured USDC address. The site signs a `TipAuthorization` only for that fixed USDC amount and the configured Ocarina support recipient. It does not currently expose custom tip recipients, custom amounts, native tips, or third-party frontend tips, even though the registry protocol can validate them.
 
 Tip policy:
 - No-tip fills require no extra signature and can use the cheapest applicable Seaport method (`fulfillOrder` for exact-item orders, `fulfillAdvancedOrder` for criteria orders).
 - Tipped fills must use `fulfillAdvancedOrder`, because Seaport passes `AdvancedOrder.extraData` to the zone and standard `fulfillOrder` has no `extraData` field.
 - Tips are detected when `zoneParameters.consideration.length > originalConsiderationCount`, where `originalConsiderationCount` is decoded from `zoneHash`.
 - Tip items are the consideration items at indices `[originalConsiderationCount, zoneParameters.consideration.length)`, in the exact order supplied to Seaport.
-- Tips may be paid to the maker, Ocarina, another frontend, or any other recipient, but only if the fulfiller signs the exact tip set.
+- Protocol-level tips may be paid to the maker, Ocarina, another frontend, or any other recipient, but only if the fulfiller signs the exact tip set.
 - Tip item types are limited to `NATIVE` and whitelisted `ERC20`. NFT tips, criteria tips, variable-amount tips, zero-amount tips, ERC-20 tips with nonzero identifiers, and non-whitelisted ERC-20 tips are rejected.
 - If there are no tip items, `extraData` must be empty. Nonempty `extraData` without tips is rejected to avoid ambiguous third-party conventions.
 - The contract does not impose a maximum number of tips; the frontend may impose a display/UX cap.
@@ -195,7 +200,7 @@ struct TipAuthorization {
 }
 ```
 
-The signed `tips` array is the exact appended `TipItem[]` in order, using the standard EIP-712 nested-array encoding. `extraData` is `abi.encode(uint256 deadline, bytes signature)`. `validateOrder` decodes `extraData`, checks `deadline >= block.timestamp`, recomputes the canonical EIP-712 array hash from the appended consideration items, builds the `TipAuthorization` digest with `fulfiller = zoneParameters.fulfiller`, and verifies the signature with `SignatureCheckerLib.isValidSignatureNowCalldata(zoneParameters.fulfiller, digest, signature)`.
+The signed `tips` array is the exact appended `TipItem[]` in order, using the standard EIP-712 nested-array encoding. `extraData` is `abi.encode(uint256 deadline, bytes signature)`. `validateOrder` decodes `extraData`, checks `deadline >= block.timestamp`, recomputes the canonical EIP-712 array hash from the appended consideration items, builds the `TipAuthorization` digest with `fulfiller = zoneParameters.fulfiller`, and verifies the signature with `SignatureCheckerLib.isValidSignatureNow(zoneParameters.fulfiller, digest, signature)`.
 
 This does not make a malicious frontend impossible, because a hostile UI can still ask the user to sign a harmful typed message and display it poorly. It does prevent a frontend from silently hiding tips only inside Seaport calldata, and it gives wallets and ERC-7730 metadata a clear signing surface for human-readable tip prompts.
 
@@ -219,7 +224,7 @@ This does not make a malicious frontend impossible, because a hostile UI can sti
 - **Web3**: ethers.js v6
 - **Wallet connection**: Reown AppKit (WalletConnect + injected providers)
 - **Styling**: Minimal custom CSS. No CSS framework.
-- **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection. For chains without Alchemy NFT API support (currently Ink), falls back to the Blockscout v2 API (`/api/v2/addresses/{addr}/nft/collections` and `/api/v2/tokens/{contract}/instances`). If `VITE_ALCHEMY_API_KEY` is not set, the asset picker shows no wallet holdings — users can still add assets via manual contract address / token ID entry.
+- **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection. For chains without Alchemy NFT API support (currently Ink, plus Sepolia in dev constants), falls back to the Blockscout v2 API (`/api/v2/addresses/{addr}/nft/collections` and `/api/v2/tokens/{contract}/instances`). If `VITE_ALCHEMY_API_KEY` is not set, Alchemy-backed chains show no wallet holdings in the picker, while Blockscout-backed chains can still enumerate holdings. Users can always add assets via manual contract address / token ID entry.
 - **Criteria item creation**: The asset picker lets users add `Any token` criteria items from single-contract collection drill-down views, or from manual entry by providing a concrete contract address and selecting the criteria option. Merged collections that aggregate multiple contracts do not show the collection-level `Any token` action.
 - **NFT metadata**: Alchemy `getNFTMetadata` (pre-cached thumbnails, fast) with onchain tokenURI + IPFS/HTTP/Arweave resolution as fallback
 - **Name resolution**: Forward resolution (name → address) for taker input, reverse resolution (address → name) for display throughout the UI. Uses mainnet provider since both systems live on L1. Supports ENS (`.eth` and other ENS TLDs) and `.wei` names (wei-names contract at `0x0000000000696760E15f265e828DB644A0c242EB`). ENS is checked first for reverse resolution; `.wei` is the fallback. For forward resolution, `.wei` names are routed directly to the wei-names contract. When a user enters a name during offer creation, the original name (`.wei` or `.eth`) is preserved and displayed through the review flow.
@@ -269,6 +274,7 @@ Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
    - All data loaded once on mount (all chains in parallel), all filters applied client-side for instant switching
    - Offer cards show "From [address/ENS]" on each side, asset thumbnails and names (NFT images fetched via Alchemy), token logos for cash, chain name and status badge
    - Populated by querying `OrderRegistered` events from OTCRegistry, cross-referenced with Seaport for order status (filled/cancelled)
+   - If event discovery falls back to the partial RPC scan for any chain, the page remains usable and shows a disclaimer that only recent offers may be present
    - Memos are not displayed on offer cards. Memos are visible on the offer detail page only.
 
 #### URL Encoding
@@ -288,7 +294,9 @@ The offer page fetches the tx receipt, parses the `OrderRegistered` event to ext
 The OTCRegistry contract emits `OrderRegistered` events when makers publish their orders. Event discovery uses a two-tier strategy:
 
 1. **Blockscout API** (primary): Queries the Blockscout transaction list API (`module=account&action=txlist`) for the OTCRegistry address, then filters for `registerOrder` calls and parses their logs. Blockscout provides full archive access with no API key and generous rate limits.
-2. **RPC fallback**: If Blockscout is unavailable, falls back to `eth_getLogs` with chunked block ranges (9,999 blocks per chunk on Polygon/Base/Ink, 49,999 on Ethereum) scanning from the deploy block forward.
+2. **Partial RPC fallback**: If Blockscout is unavailable, falls back to `eth_getLogs` over a recent block window only, not full history. The current frontend scans from `max(latestBlock - 49,999, deployBlock)` to `latestBlock`, chunked at 9,999 blocks on Polygon/Base/Ink and 49,999 blocks on Ethereum/Sepolia. Results from this path are marked `_partial`, and `/offers` shows a "Only showing recent offers. Older offers may be missing." disclaimer if any chain used the fallback.
+
+The RPC fallback is intentionally partial. It keeps the static frontend useful during Blockscout/API outages without forcing first-time visitors to make archive-scale public RPC scans. Older offers may be absent until the primary Blockscout path is available again.
 
 Events are cross-referenced with Seaport's `getOrderStatus` to determine which orders are still open, filled, or cancelled.
 
@@ -332,6 +340,7 @@ const { executeAllActions } = await seaport.createOrder({
   ],
   consideration,
   restrictedByZone: true,  // FULL_RESTRICTED (always, for zone validation)
+  conduitKey: ethers.ZeroHash,  // bytes32(0), approve Seaport directly
   endTime: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
 })
 
@@ -428,17 +437,17 @@ The asset picker hides spam collections behind a "Show Potential Spam" toggle. S
 2. **Heuristic name patterns**: ~20 regex patterns detect common spam indicators in collection names: URLs, claim/reward bait, unicode emoji, dollar amounts, protocol impersonation, fake events, bare EVM addresses, etc. Applied to collections not already flagged by the API.
 3. **OpenSea verification override**: Collections with `safelistRequestStatus` of `verified` or `approved` always override spam flags, preventing false positives on legitimate verified collections.
 
-The picker auto-fetches pages until 50 non-spam collections are loaded (or the wallet is exhausted). Spam collections are accessible via the toggle but hidden by default.
+The picker auto-fetches pages until 250 non-spam collections are loaded (or the wallet is exhausted). Each "Load More Collections" action also fetches up to the next 250 non-spam collections. Spam collections are accessible via the toggle but hidden by default.
 
 ### Holdings Verification
 
 The trade page and offers page perform onchain balance checks to verify that parties actually hold the assets in an order. This prevents users from attempting trades that will revert.
 
 - **Trade page**: Checks maker's holdings (offer items) and taker's holdings (consideration items) via direct contract calls (`ownerOf` for ERC-721, `balanceOf` for ERC-1155/ERC-20, `provider.getBalance` for native ETH). Missing assets are flagged per-item, and the Accept button is disabled if either side is missing assets.
-- **Offers page**: Checks maker holdings for all open offers. In the "Open" view, orders where the maker no longer holds assets are sorted to the bottom and visually dimmed.
+- **Offers page**: Checks maker holdings for all open offers on a conservative tri-state basis. Exact native/ERC-20/ERC-721/ERC-1155 items can be confirmed directly. Wildcard ERC-721 criteria items with `identifierOrCriteria == 0` are checked by collection `balanceOf`, including multiple wildcard items from the same contract. ERC-1155 criteria items and non-wildcard criteria proofs cannot be generically verified on the browse page, so those offers remain `unknown` rather than being treated as invalid. In the "Open" view, only orders with confirmed missing maker assets are sorted to the bottom and visually dimmed; unknown availability remains displayed as fillable.
 - **Error priority**: Wrong-taker errors take precedence over holdings errors, which take precedence over the Accept button.
 
-Friendly error messages map known Seaport/Zone custom errors to human-readable messages. OTCRegistry errors include structured context for diagnostics: `OnlySeaport(caller)`, `UnauthorizedTaker(fulfiller, allowedTaker)`, `AlreadyRegistered(orderHash, maker)`, `OrderNotRegistered(orderHash, offerer)`, `WrongZone(provided, expected)`, `WrongOrderType(provided, expected)`, `InvalidConduitKey(conduitKey)`, and `MissingItemAmount(itemType, token, identifier)`.
+Friendly error messages map known custom errors to human-readable messages. The frontend decodes all OTCRegistry custom errors, including structured context for diagnostics such as `OnlySeaport(caller)`, `UnauthorizedTaker(fulfiller, allowedTaker)`, `AlreadyRegistered(orderHash, maker)`, `OrderNotRegistered(orderHash, offerer)`, `WrongZone(provided, expected)`, `WrongOrderType(provided, expected)`, `InvalidConduitKey(conduitKey)`, tip authorization failures, and `MissingItemAmount(itemType, token, identifier)`. It also decodes common Seaport order-state, signature, criteria-resolution, native-value, conduit, and token-transfer errors so the fill/cancel flows can show specific failures instead of a generic transaction error.
 
 ### Memo Moderation
 
@@ -515,14 +524,28 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 
 ## 8. Deployments
 
-All contracts deployed via CREATE2 (Nick's Factory at `0x4e59b44847b379578588920cA78FbF26c0B4956C`) with a `0x07C00000` vanity prefix. Verified on each chain's block explorer.
+Current OTCRegistry deployments and frontend constants are mirrored from
+`src/lib/constants.js`. Production deployments are verified on each chain's
+block explorer. Sepolia is a testnet deployment for development and is not part
+of the V1 production chain scope.
 
-| Chain | Address | Whitelisted ERC-20s |
-|---|---|---|
-| Ethereum | `0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc` | WETH, USDC, USDT, USDS, EURC |
-| Base | `0x07C00000090AdB1D14b093C1A6b40135779af27C` | WETH, USDC, USDS, EURC |
-| Polygon | `0x07C000000b63fEe6aC08B91ad7aD3d999b28d740` | WETH, USDC, USDT0 |
-| Ink | `0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52` | WETH, USDC, USDT0 |
+| Chain | Address | Deploy block | Whitelisted ERC-20s |
+|---|---|---:|---|
+| Ethereum | `0x07C0000007b4B558e2fCd47F47A573413B0Caf7C` | 25125826 | WETH, USDC, USDT, USDS, EURC |
+| Sepolia (testnet) | `0xfc9E05BF732FB5Aeee7e270928F349Ed3FA3cc0D` | 10876408 | WETH, USDC |
+| Base | `0x07C00000057b66A84004adD3B0f9164E744354CB` | 46185560 | WETH, USDC, USDS, EURC |
+| Polygon | `0x07C000000e10b73C0506f36BA75E50a5D3147061` | 87095296 | WETH, USDC, USDT0 |
+| Ink | `0x07C00000025CF03243E6fde1BE86af60D12fbF8f` | 45663169 | WETH, USDC, USDT0 |
+
+Deprecated addresses from the previous deployment set are retained only for
+historical reference and should not be used for new offers:
+
+| Chain | Deprecated address |
+|---|---|
+| Ethereum | `0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc` |
+| Base | `0x07C00000090AdB1D14b093C1A6b40135779af27C` |
+| Polygon | `0x07C000000b63fEe6aC08B91ad7aD3d999b28d740` |
+| Ink | `0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52` |
 
 Historical audit findings, dispositions, and redeploy notes are tracked in
 `AUDIT-HISTORY.md`. This spec describes the current intended system only.
@@ -572,7 +595,7 @@ Historical audit findings, dispositions, and redeploy notes are tracked in
 - Privy was acquired by Stripe in mid-2025 — watch for API changes.
 
 ### Farcaster / Base App Mini-Apps
-- The site's architecture (no backend, hash routing, standard EIP-1193 wallet interface) is compatible with mini-app embedding.
+- The site's architecture (no backend, path-based client routing with SPA fallback, standard EIP-1193 wallet interface) is compatible with mini-app embedding.
 - Main work: detect mini-app context and replace the wallet provider (Farcaster SDK or Coinbase Wallet SDK instead of Reown AppKit). Everything downstream (ethers.js, Seaport calls) stays the same.
 - Requires a separate OTCRegistry deployment per chain (already done for Base, Polygon, and Ink).
 
@@ -625,14 +648,15 @@ All environment-specific values in `src/lib/constants.js`:
 - RPC endpoint URLs per chain
 - IPFS gateway URL
 
-Alchemy-specific config lives in `src/lib/metadata.js` and `src/components/create-flow/asset-picker.jsx`:
+Alchemy-specific config lives in `src/lib/alchemy.js` and `src/lib/metadata.js`:
 - Alchemy API key (via `VITE_ALCHEMY_API_KEY` env var)
 - Alchemy network identifiers per chain (`ALCHEMY_NETWORKS`)
 
 ### External Services
 - **Reown AppKit**: Wallet connection (requires project ID via `VITE_REOWN_PROJECT_ID`)
-- **Alchemy NFT v3 API**: Collection enumeration (`getContractsForOwner`, includes `isSpam` flag for spam detection) and per-collection NFT fetching (`getNFTsForOwner`) for the wallet picker, plus single-NFT metadata fallback (`getNFTMetadata`) on the trade page (requires API key via `VITE_ALCHEMY_API_KEY`). The app remains functional without it — manual asset entry is always available as a fallback.
-- **Blockchain data**: Public RPC endpoints
+- **Alchemy NFT v3 API**: Collection enumeration (`getContractsForOwner`, includes `isSpam` flag for spam detection) and per-collection NFT fetching (`getNFTsForOwner`) for the wallet picker on Alchemy-backed chains, plus single-NFT metadata fallback (`getNFTMetadata`) on the trade page (requires API key via `VITE_ALCHEMY_API_KEY`). The app remains functional without it — manual asset entry is always available, and Blockscout-backed chains can still enumerate wallet NFTs.
+- **Blockscout APIs**: Account transaction API for `OrderRegistered` discovery, logs API for filled-order transaction lookup, and v2 NFT endpoints for wallet holdings on chains without Alchemy NFT API support.
+- **Blockchain data**: Public RPC endpoints for receipts, order status, counters, holdings, approvals, metadata fallback calls, and partial event discovery when Blockscout is unavailable.
 - **NFT metadata fallback**: On-chain tokenURI + public IPFS gateways
 - **Hosting**: Any static file host
 - **Verified token list**: Bundled static JSON file, supplemented by Alchemy's OpenSea safelist status for runtime verification of unlisted contracts
@@ -645,7 +669,7 @@ Alchemy-specific config lives in `src/lib/metadata.js` and `src/components/creat
 - **ethers** (v6): Contract interaction, ABI encoding
 - **@opensea/seaport-js**: Order construction, EIP-712 signing, hash computation, and cancellation helpers
 - **react** + **react-dom** (v19): UI rendering
-- **react-router** (v7): Hash-based routing
+- **react-router** (v7): Path-based client routing via `createBrowserRouter`
 - **@reown/appkit** + **@reown/appkit-adapter-ethers**: Wallet connection
 - **buffer**: Node.js Buffer polyfill (required by seaport-js in the browser)
 

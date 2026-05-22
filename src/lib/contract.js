@@ -215,6 +215,7 @@ export async function createOrder(rawProvider, chainId, {
     offer,
     consideration,
     restrictedByZone: true,
+    conduitKey: ZeroHash,
     endTime,
   })
 

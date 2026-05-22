@@ -20,7 +20,7 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const SUPPORT_TIP_USDC_UNITS = '5000000'
 
 function friendlyFillError(err) {
-  const contractMsg = friendlyContractError(err)
+  const contractMsg = friendlyContractError(err, { preferSeaport: true })
   if (contractMsg) return contractMsg
 
   const raw = err.data || err.message || ''

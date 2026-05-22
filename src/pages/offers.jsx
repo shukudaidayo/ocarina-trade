@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useOutletContext, useSearchParams } from 'react-router'
 import { queryOrderEvents, getOrderStatus, getCounter, deriveOrderStatus } from '../lib/contract'
+import { checkMakerOfferAvailability } from '../lib/asset-checks'
 import { fetchMetadata } from '../lib/metadata'
 import { resolveENSName } from '../lib/ens'
 import AddressDisplay from '../components/address-display'
@@ -32,6 +33,14 @@ function parseChainParam(value) {
   const id = CHAIN_NAME_TO_ID[value.toLowerCase()]
   if (id && DEPLOYED_CHAINS.includes(id)) return String(id)
   return 'all'
+}
+
+function makerAvailabilityRank(order) {
+  return order.makerAvailability === 'missing' ? 0 : 1
+}
+
+function orderAvailabilityKey(order) {
+  return `${order.chainId}:${order.orderHash}`
 }
 
 export default function Offers() {
@@ -157,6 +166,51 @@ export default function Offers() {
     setVisibleCount(PAGE_SIZE)
   }, [chainFilter, category, resolvedAddress, collectionParam])
 
+  // Check maker holdings for open offers after the order statuses have loaded.
+  useEffect(() => {
+    const pending = orders.filter((order) =>
+      order.status === 'open' &&
+      order.order?.parameters?.offer &&
+      !order.makerAvailability
+    )
+    if (pending.length === 0) return undefined
+
+    let cancelled = false
+
+    async function checkPending() {
+      const BATCH_SIZE = 5
+      const results = []
+      for (let i = 0; i < pending.length; i += BATCH_SIZE) {
+        if (cancelled) return
+        const batch = pending.slice(i, i + BATCH_SIZE)
+        const checks = await Promise.all(batch.map(async (order) => {
+          const availability = await checkMakerOfferAvailability(
+            order.chainId,
+            order.maker,
+            order.order.parameters.offer
+          ).catch(() => ({ status: 'unknown', reason: 'Unable to verify maker holdings' }))
+          return { key: orderAvailabilityKey(order), availability }
+        }))
+        results.push(...checks)
+      }
+
+      if (cancelled) return
+      const byOrder = new Map(results.map(({ key, availability }) => [key, availability]))
+      setOrders((prev) => prev.map((order) => {
+        const availability = byOrder.get(orderAvailabilityKey(order))
+        if (!availability) return order
+        return {
+          ...order,
+          makerAvailability: availability.status,
+          makerAvailabilityReason: availability.reason,
+        }
+      }))
+    }
+
+    checkPending()
+    return () => { cancelled = true }
+  }, [orders])
+
   const normalizedCollection = collectionParam ? collectionParam.toLowerCase() : ''
 
   const filtered = orders.filter((o) => {
@@ -190,8 +244,10 @@ export default function Offers() {
   })
 
   if (category === 'open') {
-    // Sort open offers by soonest expiration
+    // Sort open offers by holdings availability, then soonest expiration.
     filtered.sort((a, b) => {
+      const availabilityDiff = makerAvailabilityRank(b) - makerAvailabilityRank(a)
+      if (availabilityDiff) return availabilityDiff
       const aEnd = Number(a.order?.parameters?.endTime || 0)
       const bEnd = Number(b.order?.parameters?.endTime || 0)
       if (!aEnd && !bEnd) return 0
@@ -278,7 +334,11 @@ export default function Offers() {
       {!loading && visible.length > 0 && (
         <div className="offers-list">
           {visible.map((order) => (
-            <OfferCard key={order.orderHash} order={order} />
+            <OfferCard
+              key={order.orderHash}
+              order={order}
+              invalidHoldings={order.makerAvailability === 'missing'}
+            />
           ))}
         </div>
       )}
@@ -307,13 +367,13 @@ const TOKEN_LOGOS = {
   EURC: new URL('../assets/tokens/eurc.png', import.meta.url).href,
 }
 
-function OfferCard({ order }) {
+function OfferCard({ order, invalidHoldings }) {
   const { chainId } = order
   const offerUrl = `/offer/${chainId}/${order.transactionHash}`
   const params = order.order?.parameters
 
   return (
-    <Link to={offerUrl} className="offer-card">
+    <Link to={offerUrl} className={`offer-card${invalidHoldings ? ' offer-card-invalid' : ''}`}>
       <div className="offer-card-side">
         <div className="offer-card-from">
           From <AddressDisplay address={order.maker} chainId={chainId} asSpan />
@@ -335,6 +395,11 @@ function OfferCard({ order }) {
         <span className={`status-badge status-${order.status}`}>
           {order.status}
         </span>
+        {invalidHoldings && (
+          <span className="offer-card-warning">
+            Maker no longer holds assets
+          </span>
+        )}
       </div>
     </Link>
   )

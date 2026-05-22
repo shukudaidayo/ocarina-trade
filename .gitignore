@@ -13,6 +13,7 @@ contracts/lib/
 refs/
 
 # Dev tools
+.tools/
 deploy.html
 mint-1155.html
 deployers/
