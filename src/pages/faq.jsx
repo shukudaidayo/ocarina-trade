@@ -1,20 +1,20 @@
 import { useState, useEffect, useRef } from 'react'
-import { ZONE_ADDRESSES } from '../lib/constants'
+import { ZONE_ADDRESSES, DEPRECATED_OTCZONE_ADDRESSES } from '../lib/constants'
 import { getEtherscanUrl } from '../lib/verification'
 
 const ZONE_CHAINS = [
   { chainId: 1, name: 'Ethereum' },
   { chainId: 8453, name: 'Base' },
   { chainId: 137, name: 'Polygon' },
-  { chainId: 57073, name: 'Ink' },
+  { chainId: 11155111, name: 'Sepolia (testnet)' },
 ]
 
-const DEPRECATED_OTCZONE_ADDRESSES = {
-  1: '0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc',
-  8453: '0x07C00000090AdB1D14b093C1A6b40135779af27C',
-  137: '0x07C000000b63fEe6aC08B91ad7aD3d999b28d740',
-  57073: '0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52',
-}
+const DEPRECATED_OTCZONE_CHAINS = [
+  { chainId: 1, name: 'Ethereum' },
+  { chainId: 8453, name: 'Base' },
+  { chainId: 137, name: 'Polygon' },
+  { chainId: 57073, name: 'Ink' },
+]
 
 const questions = [
   {
@@ -35,7 +35,7 @@ const questions = [
   {
     id: 'assets',
     q: 'What assets can I trade?',
-    a: <><p>Ocarina supports most onchain collectibles, WETH, and a limited number of stablecoins. We limit which cash assets you can include in trades so that you never have to wonder if "USDC" is the real deal or a worthless token with the same name.</p><p>Currently, Ocarina supports Ethereum, Polygon, Base, and Ink. Cross-chain trades are not supported — both sides of the trade have to be on the same chain. Solana is not supported.</p></>,
+    a: <><p>Ocarina supports most onchain collectibles, WETH, and a limited number of stablecoins. We limit which cash assets you can include in trades so that you never have to wonder if "USDC" is the real deal or a worthless token with the same name.</p><p>Currently, Ocarina supports Ethereum, Base, and Polygon. This test branch also exposes Sepolia while the new registry flow is being validated. Cross-chain trades are not supported — both sides of the trade have to be on the same chain. Solana is not supported.</p></>,
   },
   {
     id: 'fees',
@@ -50,7 +50,7 @@ const questions = [
   {
     id: 'unverified',
     q: 'Why do some assets show as "unverified"?',
-    a: <><p>To help prevent scams, Ocarina uses <a href="https://www.alchemy.com/nft-api" target="_blank" rel="noopener noreferrer">Alchemy</a> to verify collectibles. When accepting an offer with assets from unverified collections, we'll warn you and show you the unverified contract addresses before you can accept the trade — we recommend that you search these contracts on OpenSea or another data source, so you know what you're getting.</p><p>Alchemy currently doesn't support Ink collectibles, so you'll see this warning on every Ink trade.</p></>,
+    a: <><p>To help prevent scams, Ocarina uses <a href="https://www.alchemy.com/nft-api" target="_blank" rel="noopener noreferrer">Alchemy</a> to verify collectibles. When accepting an offer with assets from unverified collections, we'll warn you and show you the unverified contract addresses before you can accept the trade — we recommend that you search these contracts on OpenSea or another data source, so you know what you're getting.</p><p>On testnets or chains without Alchemy verification data, assets may appear unverified even when entered correctly.</p></>,
   },
   {
     id: 'multiple-offers',
@@ -123,7 +123,7 @@ export default function FAQ() {
 
   const deprecatedZoneLinks = (
     <span className="faq-zone-links faq-zone-links-deprecated">
-      {ZONE_CHAINS.map(({ chainId, name }) => (
+      {DEPRECATED_OTCZONE_CHAINS.map(({ chainId, name }) => (
         <span key={chainId}>
           {name}: <a href={getEtherscanUrl(chainId, DEPRECATED_OTCZONE_ADDRESSES[chainId])} target="_blank" rel="noopener noreferrer"><code>{DEPRECATED_OTCZONE_ADDRESSES[chainId]}</code></a>
         </span>

@@ -1,14 +1,13 @@
 import { useState } from 'react'
 import { ethers } from 'ethers'
 import { useCreateFlow } from './context'
-import { ZONE_ADDRESSES, CHAINS } from '../../lib/constants'
+import { ZONE_ADDRESSES, SELECTABLE_CHAIN_IDS, CHAINS } from '../../lib/constants'
 
 const CHAIN_LOGOS = {
   1: new URL('../../assets/tokens/eth.png', import.meta.url).href,
   11155111: new URL('../../assets/tokens/eth.png', import.meta.url).href,
   8453: new URL('../../assets/chains/base.jpg', import.meta.url).href,
   137: new URL('../../assets/tokens/pol.png', import.meta.url).href,
-  57073: new URL('../../assets/chains/ink.png', import.meta.url).href,
 }
 
 const CHAIN_DESCRIPTIONS = {
@@ -16,14 +15,10 @@ const CHAIN_DESCRIPTIONS = {
   11155111: 'Testnet offers',
   8453: 'Beezie, Slab, and RIP.FUN',
   137: 'Courtyard collectibles',
-  57073: 'Select Phygitals collectibles',
 }
 
 function getSwapUrl(chainId) {
   const symbol = CHAINS[chainId]?.nativeSymbol || 'ETH'
-  if (chainId === 57073) {
-    return { url: 'https://velodrome.finance/swap?to=eth&chain1=57073', label: `Buy ${symbol} on Velodrome` }
-  }
   if (chainId === 11155111) {
     return { url: 'https://cloud.google.com/application/web3/faucet/ethereum/sepolia', label: `Get Sepolia ${symbol}` }
   }
@@ -31,9 +26,7 @@ function getSwapUrl(chainId) {
   return { url: `https://app.uniswap.org/swap?chain=${slugs[chainId]}&outputCurrency=NATIVE`, label: `Buy ${symbol} on Uniswap` }
 }
 
-const DEPLOYED_CHAINS = Object.entries(ZONE_ADDRESSES)
-  .filter(([, addr]) => addr !== null)
-  .map(([id]) => Number(id))
+const SELECTABLE_CHAINS = SELECTABLE_CHAIN_IDS.filter((id) => ZONE_ADDRESSES[id])
 
 export default function StepChain({ wallet }) {
   const { next, chainId, setChainId, setMakerAssets, setTakerAssets } = useCreateFlow()
@@ -79,7 +72,7 @@ export default function StepChain({ wallet }) {
     <div className="wizard-screen">
       <h2>Which chain are you trading on?</h2>
       <div className="chain-cards">
-        {DEPLOYED_CHAINS.map((id) => (
+        {SELECTABLE_CHAINS.map((id) => (
           <button
             key={id}
             className={`chain-card${chainId === id ? ' chain-card-active' : ''}`}

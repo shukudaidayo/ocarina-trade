@@ -8,6 +8,10 @@ export const CHAINS = {
   57073: { name: 'Ink', nativeSymbol: 'ETH', rpcUrl: 'https://rpc-gel.inkonchain.com', blockscoutApi: 'https://explorer.inkonchain.com/api' },
 }
 
+// Chains shown in the public create/offers UI. CHAINS and deployment constants
+// may keep additional historical or direct-link-compatible networks.
+export const SELECTABLE_CHAIN_IDS = [1, 8453, 137, 11155111]
+
 // Seaport 1.6 canonical address (same on all chains)
 export const SEAPORT_ADDRESS = '0x0000000000000068F116a894984e2DB1123eB395'
 export const OCARINA_SUPPORT_ADDRESS = '0x9a659894e5D115846767dB0e1685744c452E7a6e'
@@ -28,6 +32,20 @@ export const ZONE_DEPLOY_BLOCKS = {
   8453: 46185560,
   137: 87095296,
   57073: 45663169,
+}
+
+export const DEPRECATED_OTCZONE_ADDRESSES = {
+  1: '0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc',
+  8453: '0x07C00000090AdB1D14b093C1A6b40135779af27C',
+  137: '0x07C000000b63fEe6aC08B91ad7aD3d999b28d740',
+  57073: '0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52',
+}
+
+export const DEPRECATED_OTCZONE_DEPLOY_BLOCKS = {
+  1: 24694574,
+  8453: 43637380,
+  137: 84472380,
+  57073: 41165529,
 }
 
 // Whitelisted ERC-20 tokens per chain
@@ -136,6 +154,21 @@ export const ZONE_ABI = [
       { name: 'maker', type: 'address', indexed: true },
       { name: 'taker', type: 'address', indexed: true },
       { ...ORDER_COMPONENTS_ABI, indexed: false },
+      { name: 'memo', type: 'string', indexed: false },
+    ],
+    anonymous: false,
+  },
+]
+
+export const LEGACY_OTCZONE_ABI = [
+  {
+    type: 'event',
+    name: 'OrderRegistered',
+    inputs: [
+      { name: 'orderHash', type: 'bytes32', indexed: true },
+      { name: 'maker', type: 'address', indexed: true },
+      { name: 'taker', type: 'address', indexed: true },
+      { name: 'orderURI', type: 'string', indexed: false },
       { name: 'memo', type: 'string', indexed: false },
     ],
     anonymous: false,

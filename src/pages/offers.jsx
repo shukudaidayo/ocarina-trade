@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useOutletContext, useSearchParams } from 'react-router'
 import { queryOrderEvents, getOrderStatus, getCounter, deriveOrderStatus } from '../lib/contract'
+import { getArchivedOfferRecords } from '../lib/legacy-offers'
 import { checkMakerOfferAvailability } from '../lib/asset-checks'
 import { fetchMetadata } from '../lib/metadata'
 import { resolveENSName } from '../lib/ens'
 import AddressDisplay from '../components/address-display'
-import { ZONE_ADDRESSES, CHAINS, WHITELISTED_ERC20 } from '../lib/constants'
+import { ZONE_ADDRESSES, SELECTABLE_CHAIN_IDS, CHAINS, WHITELISTED_ERC20 } from '../lib/constants'
 import { formatUnits } from 'ethers'
 import { formatTokenAmount } from '../lib/wallet'
 import { ItemType } from '@opensea/seaport-js/lib/constants'
@@ -13,10 +14,7 @@ import { ItemType } from '@opensea/seaport-js/lib/constants'
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const PAGE_SIZE = 20
 
-// Chains that have a deployed zone contract
-const DEPLOYED_CHAINS = Object.entries(ZONE_ADDRESSES)
-  .filter(([, addr]) => addr !== null)
-  .map(([id]) => Number(id))
+const SELECTABLE_CHAINS = SELECTABLE_CHAIN_IDS.filter((id) => ZONE_ADDRESSES[id])
 
 // Map chain names to chain IDs for URL params
 const CHAIN_NAME_TO_ID = {}
@@ -28,10 +26,10 @@ function parseChainParam(value) {
   if (!value || value === 'all') return 'all'
   // Try as chain ID first
   const asNum = Number(value)
-  if (DEPLOYED_CHAINS.includes(asNum)) return String(asNum)
+  if (SELECTABLE_CHAINS.includes(asNum)) return String(asNum)
   // Try as chain name
   const id = CHAIN_NAME_TO_ID[value.toLowerCase()]
-  if (id && DEPLOYED_CHAINS.includes(id)) return String(id)
+  if (id && SELECTABLE_CHAINS.includes(id)) return String(id)
   return 'all'
 }
 
@@ -105,7 +103,7 @@ export default function Offers() {
     async function load() {
       try {
         const chainResults = await Promise.all(
-          DEPLOYED_CHAINS.map(async (cid) => {
+          SELECTABLE_CHAINS.map(async (cid) => {
             const registrations = await queryOrderEvents(cid, ZONE_ADDRESSES[cid])
             const isPartial = registrations._partial
             const tagged = registrations.map((r) => ({ ...r, chainId: cid }))
@@ -147,6 +145,7 @@ export default function Offers() {
 
         const allOrders = chainResults.flat()
         allOrders.reverse()
+        allOrders.push(...getArchivedOfferRecords())
         const anyPartial = chainResults.some((r) => r._partial)
         if (anyPartial) setPartial(true)
         setOrders(allOrders)
@@ -276,7 +275,7 @@ export default function Offers() {
           Chain
           <select value={chainFilter} onChange={(e) => setParam('chain', e.target.value)}>
             <option value="all">All Chains</option>
-            {DEPLOYED_CHAINS.map((id) => (
+            {SELECTABLE_CHAINS.map((id) => (
               <option key={id} value={id}>{CHAINS[id]?.name || `Chain ${id}`}</option>
             ))}
           </select>
@@ -335,7 +334,7 @@ export default function Offers() {
         <div className="offers-list">
           {visible.map((order) => (
             <OfferCard
-              key={order.orderHash}
+              key={`${order.chainId}:${order.orderHash}`}
               order={order}
               invalidHoldings={order.makerAvailability === 'missing'}
             />

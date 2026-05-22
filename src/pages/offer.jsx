@@ -151,6 +151,12 @@ export default function Offer() {
     let cancelled = false
     async function load() {
       try {
+        setOrderData(null)
+        setLoadError(null)
+        setStatusLabel(null)
+        setStatusLoading(true)
+        setFillTxHash(null)
+        setFulfiller(null)
         const data = await getOrderFromTx(Number(chainId), txHash)
         if (cancelled) return
         setOrderData(data)
@@ -169,6 +175,13 @@ export default function Offer() {
   // Fetch order status separately so a transient RPC failure doesn't destroy loaded order data
   useEffect(() => {
     if (!orderData) return
+    if (orderData.archived) {
+      setStatusLabel(orderData.status)
+      setStatusLoading(false)
+      if (orderData.resolution?.txHash) setFillTxHash(orderData.resolution.txHash)
+      if (orderData.resolution?.fulfiller) setFulfiller(orderData.resolution.fulfiller)
+      return
+    }
     let cancelled = false
     async function load() {
       try {
@@ -194,6 +207,7 @@ export default function Offer() {
   // Fetch fill transaction hash + fulfiller address for filled orders
   useEffect(() => {
     if (!orderData || statusLabel !== 'filled') return
+    if (orderData.archived) return
     let cancelled = false
     const offerer = orderData.order.parameters.offerer
     const cid = Number(chainId)
@@ -703,13 +717,15 @@ export default function Offer() {
             </p>
           )
         })()}
-        {fillTxHash && (() => {
+        {(orderData.resolution?.txHash || fillTxHash) && (() => {
           const explorers = { 1: 'https://etherscan.io', 8453: 'https://basescan.org', 137: 'https://polygonscan.com', 57073: 'https://explorer.inkonchain.com' }
           const base = explorers[Number(chainId)] || explorers[1]
-          const url = `${base}/tx/${fillTxHash}`
+          const hash = orderData.resolution?.txHash || fillTxHash
+          const label = orderData.resolution?.type === 'cancel' ? 'Cancel tx' : 'Fill tx'
+          const url = `${base}/tx/${hash}`
           return (
             <p>
-              <span className="meta-label">Fill tx:</span>{' '}
+              <span className="meta-label">{label}:</span>{' '}
               <a href={url} target="_blank" rel="noopener noreferrer">{url}</a>
             </p>
           )

@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:contracts": "cd contracts && forge test"
+    "test:contracts": "cd contracts && forge test",
+    "generate:legacy-offers": "node scripts/generate-legacy-offers.mjs",
+    "validate:legacy-offers": "node scripts/validate-legacy-offers.mjs"
   },
   "dependencies": {
     "@opensea/seaport-js": "^4.0.6",

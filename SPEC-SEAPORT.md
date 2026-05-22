@@ -27,7 +27,7 @@ Both otc.sudoswap.xyz and opensea.io/deals are dead. The ecosystem needs a simpl
 
 ## 2. V1 Scope
 
-- **Chains**: Ethereum, Base, Polygon, Ink
+- **Chains**: Ethereum, Base, Polygon. Sepolia remains available in the `otcregistry` branch for testing. Ink has a deployed registry and can be used by third-party frontends, but ocarina.trade does not expose it in the public chain picker or offers browser.
 - **Token types**: ERC-721, ERC-1155, ERC-20 (whitelisted only), and native ETH (taker side only — Seaport requires the caller to provide ETH via `msg.value`, so the maker cannot offer native ETH in a standard `fulfillOrder` flow). ERC-721 and ERC-1155 collection-wide wildcard criteria items are supported as "Any token" items for single-contract collections.
 - **Trade structure**: Multi-asset <-> multi-asset (each side can have 1+ items)
 - **Counterparty**: Optionally restricted to a specific address, or open to anyone
@@ -125,7 +125,7 @@ The contract implements Seaport 1.6's `ZoneInterface` (from `seaport-types`). It
 
 It serves three purposes:
 1. **Taker validation**: `authorizeOrder` (pre-transfer) checks that the fulfiller matches the allowed taker encoded in the lower 20 bytes of `zoneHash` (the Seaport order's zoneHash, not a registration field). Open offers use a zero taker field; directed offers use the right-aligned taker address. The upper 96 bits contain Ocarina metadata, including the original consideration count used for tip detection.
-2. **ERC-20 whitelist + item-standard validation**: Rejects orders containing non-whitelisted ERC-20 tokens at registration and fulfillment. OTCRegistry also enforces declared item shape at registration: all registered items must have fixed, nonzero amounts (`startAmount == endAmount` and `startAmount > 0`) and `conduitKey == bytes32(0)`; `startTime <= block.timestamp <= endTime`; all consideration recipients must equal the maker; ERC-20 items must have `identifier == 0`; ERC-721 items must support ERC-165 `IERC721` and have amount `1`; ERC-1155 items must support ERC-165 `IERC1155`; native items must use `token == address(0)` and `identifier == 0`; native items are allowed only on the consideration side, because Seaport fulfillment supplies native ETH from the caller via `msg.value` and cannot transfer native ETH from the maker's offer side. These checks block ordinary mislabeling and malformed orders, but ERC-165 is self-attested by the token contract and is not an authenticity or transferability guarantee for arbitrary malicious or policy-gated NFTs. NFT transferability policies, including ERC-5192, ERC-5484, ERC-6454, ERC721-C, ERC1155-C, criteria-item ambiguity, maker/taker-specific transfer rules, and other collection-specific restrictions are handled by frontend warnings and optional simulations rather than by the registry. Whitelist is set at deployment (immutable — no admin can modify it). Whitelisted ERC-20s must be standard, non-rebasing, non-fee-on-transfer tokens: OTCRegistry checks whitelist membership, but it does not measure sender or recipient balance deltas during Seaport settlement. Adding a rebasing token, transfer-fee token, hook-based token, or otherwise non-standard ERC-20 would make the whitelist assumption unsafe and requires a new security review before deployment. Whitelists per chain: Ethereum (WETH, USDC, USDT, USDS, EURC), Base (WETH, USDC, USDS, EURC), Polygon (WETH, USDC, USDT0), Ink (WETH, USDC, USDT0).
+2. **ERC-20 whitelist + item-standard validation**: Rejects orders containing non-whitelisted ERC-20 tokens at registration and fulfillment. OTCRegistry also enforces declared item shape at registration: all registered items must have fixed, nonzero amounts (`startAmount == endAmount` and `startAmount > 0`) and `conduitKey == bytes32(0)`; `startTime <= block.timestamp <= endTime`; all consideration recipients must equal the maker; ERC-20 items must have `identifier == 0`; ERC-721 items must support ERC-165 `IERC721` and have amount `1`; ERC-1155 items must support ERC-165 `IERC1155`; native items must use `token == address(0)` and `identifier == 0`; native items are allowed only on the consideration side, because Seaport fulfillment supplies native ETH from the caller via `msg.value` and cannot transfer native ETH from the maker's offer side. These checks block ordinary mislabeling and malformed orders, but ERC-165 is self-attested by the token contract and is not an authenticity or transferability guarantee for arbitrary malicious or policy-gated NFTs. NFT transferability policies, including ERC-5192, ERC-5484, ERC-6454, ERC721-C, ERC1155-C, criteria-item ambiguity, maker/taker-specific transfer rules, and other collection-specific restrictions are handled by frontend warnings and optional simulations rather than by the registry. Whitelist is set at deployment (immutable — no admin can modify it). Whitelisted ERC-20s must be standard, non-rebasing, non-fee-on-transfer tokens: OTCRegistry checks whitelist membership, but it does not measure sender or recipient balance deltas during Seaport settlement. Adding a rebasing token, transfer-fee token, hook-based token, or otherwise non-standard ERC-20 would make the whitelist assumption unsafe and requires a new security review before deployment. Whitelists for selectable chains: Ethereum (WETH, USDC, USDT, USDS, EURC), Base (WETH, USDC, USDS, EURC), Polygon (WETH, USDC, USDT0), Sepolia (WETH, USDC). The unlisted Ink deployment whitelists WETH, USDC, and USDT0.
 3. **Order registry**: `registerOrder` publishes Seaport-validated orders for discovery and is mandatory for settlement through OTCRegistry. It accepts `OrderComponents` (the full Seaport order parameters) and a `seaportSignature`, plus an optional `memo` (max 280 bytes) and an OTCRegistry `signature`. The contract requires `components.counter` to equal Seaport's current counter for the offerer, then calls `ISeaport(seaport).getOrderHash(components)` to derive the canonical order hash — no EIP-712 reimplementation. It asserts `components.zone == address(this)` and `components.orderType == FULL_RESTRICTED` before proceeding, so the emitted event is trustworthy by construction for all consumers without client-side cross-checks. The expiry check uses `components.endTime` directly; there is no separate `deadline` field. The maker's EIP-712 registration signature covers `(orderHash, keccak(seaportSignature), keccak(memo))` under OTCRegistry's domain: `orderHash` transitively binds all order fields (offerer, taker via zoneHash, endTime, etc.), and binding `seaportSignature` prevents a front-runner from substituting a bad Seaport sig using a stolen registration sig. The contract then calls `Seaport.validate()` before emitting. In the normal path this verifies the Seaport signature and marks the order hash validated in Seaport storage; if the same order hash was already validated directly in Seaport, Seaport may skip re-verifying the supplied signature bytes, but the bytes are not emitted and are not part of the public order payload. Consumers fulfill registered orders with an empty Seaport signature (`0x`) and treat the validated order hash plus registry event as the publication proof. Solady's `SignatureCheckerLib` supports EOA signatures (both standard 65-byte and EIP-2098 compact 64-byte) and EIP-1271 contract wallet signatures. Submission is permissionless — `msg.sender` is unchecked — which supports proxy wallets, gas sponsors, and mini-app relayers submitting on the maker's behalf. A `registered[orderHash]` mapping blocks replay and is checked during fulfillment. Seaport's order hash commits to the offerer, so the same order hash can only land once, a would-be squatter can't register the legitimate maker's order without that maker's OTCRegistry signature, and unregistered Seaport orders cannot settle through OTCRegistry. The `registered` slot is written before the signature check (CEI ordering) as defense-in-depth against any future ERC-1271 callback that isn't a staticcall and so Seaport's validation path can observe the registered order if it invokes the zone. An expired order reverts before the slot is written, so a maker can create a fresh Seaport order (new `endTime` → new `orderHash`) and publish.
 
 ```solidity
@@ -224,7 +224,7 @@ This does not make a malicious frontend impossible, because a hostile UI can sti
 - **Web3**: ethers.js v6
 - **Wallet connection**: Reown AppKit (WalletConnect + injected providers)
 - **Styling**: Minimal custom CSS. No CSS framework.
-- **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection. For chains without Alchemy NFT API support (currently Ink, plus Sepolia in dev constants), falls back to the Blockscout v2 API (`/api/v2/addresses/{addr}/nft/collections` and `/api/v2/tokens/{contract}/instances`). If `VITE_ALCHEMY_API_KEY` is not set, Alchemy-backed chains show no wallet holdings in the picker, while Blockscout-backed chains can still enumerate holdings. Users can always add assets via manual contract address / token ID entry.
+- **NFT data**: Alchemy NFT v3 API — `getContractsForOwner` for collection enumeration in the asset picker, `getNFTsForOwner` for fetching individual NFTs within a specific collection. For chains without Alchemy NFT API support (currently Sepolia in the testing UI, plus unlisted Ink direct links), falls back to the Blockscout v2 API (`/api/v2/addresses/{addr}/nft/collections` and `/api/v2/tokens/{contract}/instances`). If `VITE_ALCHEMY_API_KEY` is not set, Alchemy-backed chains show no wallet holdings in the picker, while Blockscout-backed chains can still enumerate holdings. Users can always add assets via manual contract address / token ID entry.
 - **Criteria item creation**: The asset picker lets users add `Any token` criteria items from single-contract collection drill-down views, or from manual entry by providing a concrete contract address and selecting the criteria option. Merged collections that aggregate multiple contracts do not show the collection-level `Any token` action.
 - **NFT metadata**: Alchemy `getNFTMetadata` (pre-cached thumbnails, fast) with onchain tokenURI + IPFS/HTTP/Arweave resolution as fallback
 - **Name resolution**: Forward resolution (name → address) for taker input, reverse resolution (address → name) for display throughout the UI. Uses mainnet provider since both systems live on L1. Supports ENS (`.eth` and other ENS TLDs) and `.wei` names (wei-names contract at `0x0000000000696760E15f265e828DB644A0c242EB`). ENS is checked first for reverse resolution; `.wei` is the fallback. For forward resolution, `.wei` names are routed directly to the wei-names contract. When a user enters a name during offer creation, the original name (`.wei` or `.eth`) is preserved and displayed through the review flow.
@@ -247,8 +247,9 @@ Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
    - Full details in `SPEC-CREATE-FLOW.md`
 
 3. **`/offer/{chainId}/{txHash}`** - View and accept an offer
-   - Fetch `OrderRegistered` event from the registration tx receipt
-   - Reconstruct the validated Seaport order from the emitted `OrderComponents` with empty signature `0x`
+   - For current OTCRegistry offers, fetch `OrderRegistered` event from the registration tx receipt
+   - For archived non-open OTCZone offers, load the normalized local archive record by `{chainId, txHash}` without reading the deprecated OTCZone contract
+   - Reconstruct the validated Seaport order from the emitted `OrderComponents` with empty signature `0x` for OTCRegistry offers, or from the archived signed order for legacy OTCZone offers
    - Display both sides with large NFT images, small logos for cash assets, OpenSea/Uniswap links
    - Layout: "From [address/ENS]" headers for each side ("From Anyone" for open taker)
    - Display memo (if present) in the offer metadata section
@@ -263,17 +264,19 @@ Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
 4. **`/faq`** - FAQ page
    - Scrollable Q&A with sticky sidebar navigation (sidebar hidden on mobile)
    - Sidebar highlights the current section based on scroll position
+   - Current OTCRegistry addresses list the chains exposed by the site/test branch. Deprecated OTCZone addresses are shown separately and include Ink, because historical non-open Ink orders used that old contract.
    - No wallet connection UI on this page
 
 5. **`/offers`** - Browse offers
    - All filters are URL query params, making filtered views shareable (e.g., `/offers?chain=base&category=open&address=vitalik.eth`)
-   - Chain filter: Ethereum / Base / Polygon / Ink / All Chains. Accepts chain ID (`?chain=8453`) or name (`?chain=base`)
+   - Chain filter: All Chains / Ethereum / Base / Polygon / Sepolia. Accepts chain ID (`?chain=8453`) or name (`?chain=base`). Unlisted deployments such as Ink are not queried by the public offers browser.
    - Status filter: "Open" (default) / "All". Open filters to unfilled/uncancelled/unexpired orders
    - Address filter: `0x...` or ENS/.wei name. Shows offers where the address is maker or taker. "Me" button fills the connected wallet's address
    - Collection filter: contract address. Shows offers involving that NFT/token contract on either side
    - All data loaded once on mount (all chains in parallel), all filters applied client-side for instant switching
    - Offer cards show "From [address/ENS]" on each side, asset thumbnails and names (NFT images fetched via Alchemy), token logos for cash, chain name and status badge
    - Populated by querying `OrderRegistered` events from OTCRegistry, cross-referenced with Seaport for order status (filled/cancelled)
+   - Also merges locally archived non-open OTCZone offers. These records appear under "All" and participate in address and collection filtering, but never appear under the default "Open" view. Archived records on chains exposed in the chain filter also participate in that filter; archived Ink records remain visible through "All" and direct offer URLs without adding Ink back to the visible chain filter.
    - If event discovery falls back to the partial RPC scan for any chain, the page remains usable and shows a disclaimer that only recent offers may be present
    - Memos are not displayed on offer cards. Memos are visible on the offer detail page only.
 
@@ -287,14 +290,14 @@ Since the validated order parameters are stored onchain in the `OrderRegistered`
 
 Example: `/offer/1/0x7bd391346f238fc36c19291a1f9678773ca5a47a475814592194802cbec983cb`
 
-The offer page fetches the tx receipt, parses the `OrderRegistered` event to extract the order parameters, and has everything needed to display the offer and call `fulfillOrder` with `signature: "0x"` because registration already validated the order hash in Seaport. The parser must only accept an `OrderRegistered` log whose `log.address` equals the canonical `OTCRegistry` address for the URL's `chainId`; same-ABI events from any other contract are ignored. After decoding, the frontend also rechecks that the order's `zone` is the same registry address, that `orderType` is `FULL_RESTRICTED`, and that seaport-js derives the emitted `orderHash` from the decoded parameters. Uses path-based routing (not hash routing) so that crawlers can read the URL for OG meta tags.
+The offer page first checks the local legacy archive for an exact `{chainId, txHash}` match. Archived records are already non-open and are displayed read-only. If no archive record exists, the page fetches the tx receipt, parses the `OrderRegistered` event to extract the order parameters, and has everything needed to display the offer and call `fulfillOrder` with `signature: "0x"` because registration already validated the order hash in Seaport. The parser must only accept an `OrderRegistered` log whose `log.address` equals the canonical `OTCRegistry` address for the URL's `chainId`; same-ABI events from any other contract are ignored. After decoding, the frontend also rechecks that the order's `zone` is the same registry address, that `orderType` is `FULL_RESTRICTED`, and that seaport-js derives the emitted `orderHash` from the decoded parameters. Uses path-based routing (not hash routing) so that crawlers can read the URL for OG meta tags.
 
 #### Order Discovery / Offers Page
 
 The OTCRegistry contract emits `OrderRegistered` events when makers publish their orders. Event discovery uses a two-tier strategy:
 
-1. **Blockscout API** (primary): Queries the Blockscout transaction list API (`module=account&action=txlist`) for the OTCRegistry address, then filters for `registerOrder` calls and parses their logs. Blockscout provides full archive access with no API key and generous rate limits.
-2. **Partial RPC fallback**: If Blockscout is unavailable, falls back to `eth_getLogs` over a recent block window only, not full history. The current frontend scans from `max(latestBlock - 49,999, deployBlock)` to `latestBlock`, chunked at 9,999 blocks on Polygon/Base/Ink and 49,999 blocks on Ethereum/Sepolia. Results from this path are marked `_partial`, and `/offers` shows a "Only showing recent offers. Older offers may be missing." disclaimer if any chain used the fallback.
+1. **Blockscout API** (primary): Queries the Blockscout logs API (`module=logs&action=getLogs`) for `OrderRegistered` events emitted by the OTCRegistry address from its deploy block. If the logs endpoint is unavailable, the frontend may fall back to Blockscout's account transaction list API (`module=account&action=txlist`) and parse registration receipts. Blockscout provides full archive access with no API key and generous rate limits.
+2. **Partial RPC fallback**: If Blockscout is unavailable, falls back to `eth_getLogs` over a recent block window only, not full history. The current frontend scans from `max(latestBlock - 49,999, deployBlock)` to `latestBlock`, chunked at 9,999 blocks on Polygon/Base and 49,999 blocks on Ethereum/Sepolia. Results from this path are marked `_partial`, and `/offers` shows a "Only showing recent offers. Older offers may be missing." disclaimer if any chain used the fallback. Direct reads against the unlisted Ink deployment use the same 9,999-block chunk size if invoked.
 
 The RPC fallback is intentionally partial. It keeps the static frontend useful during Blockscout/API outages without forcing first-time visitors to make archive-scale public RPC scans. Older offers may be absent until the primary Blockscout path is available again.
 
@@ -304,6 +307,76 @@ Events are cross-referenced with Seaport's `getOrderStatus` to determine which o
 - **All**: All `OrderRegistered` events regardless of status. Sorted by creation time (newest first).
 
 Each `OrderRegistered` event contains structured `OrderComponents`, which have everything needed to reconstruct the trade page link and fulfillment payload for an already-validated order.
+
+#### Legacy Non-Open Offer Archive
+
+Non-open offers from deprecated OTCZone contracts are preserved as static local data rather than discovered from deprecated contracts at runtime. The archive should live in a committed JSON file such as `src/data/legacy-offers.json` and be generated by an offline script. Runtime code may import this file, merge records into `/offers`, and resolve individual `/offer/{chainId}/{txHash}` pages from it, but it must not query deprecated OTCZone contracts to render these records.
+
+Scope:
+
+- Include only non-open OTCZone offers: filled, cancelled, expired, or counter-invalidated. Any still-open legacy orders remain out of scope.
+- Include all deprecated OTCZone deployments with non-open orders, including Ink. Ink archive records may appear in "All" results and direct offer URLs even though Ink is not exposed in the ocarina.trade chain picker or visible offers filter.
+- Preserve existing URL shape: archived offer pages use the original registration tx hash, `/offer/{chainId}/{registrationTxHash}`.
+- Do not add a new backend or runtime indexing service. The archive is static site data.
+
+Archive generation:
+
+1. Query each deprecated OTCZone deployment for `OrderRegistered(bytes32,address,address,string,string)` events. The archive generator should consume event logs directly, preferably via Blockscout `getLogs` with a full RPC `eth_getLogs` fallback, rather than relying on old transaction receipts that may be unavailable from public RPC nodes.
+2. Decode `orderURI` as the legacy base64 JSON signed Seaport order.
+3. Re-anchor each event by recomputing `seaport.getOrderHash(order.parameters)` and requiring it to match `event.orderHash`.
+4. Require `order.parameters.zone` to equal the deprecated OTCZone address and `order.parameters.orderType` to be `FULL_RESTRICTED`.
+5. Derive maker from `order.parameters.offerer` and taker from the lower 160 bits of `order.parameters.zoneHash`, ignoring the event `maker`/`taker` fields except as audit inputs.
+6. Dedupe by `orderHash` using earliest `(blockNumber, logIndex)` to preserve the legacy frontend's trust model and avoid replay-overwrite spoofing.
+7. Derive status from Seaport `getOrderStatus(orderHash)`, the current maker counter, and `order.parameters.endTime`. Include only records whose derived status is not `open`. Store counter-invalidated orders as `cancelled` unless the UI later needs a separate badge.
+8. For filled records, find and store the Seaport `OrderFulfilled` transaction hash by filtering canonical Seaport logs with topic1 = offerer and topic2 = deprecated OTCZone address, then matching the unindexed `orderHash` in event data. For explicit cancellations, store the cancellation transaction if it is discoverable from Seaport `OrderCancelled` logs. Expired records have no terminal transaction.
+9. Emit deterministic JSON sorted by chain, registration block, and log index. Avoid volatile generated timestamps unless they are needed for audit notes.
+
+Archive record shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "records": [
+    {
+      "source": "OTCZone",
+      "status": "filled",
+      "chainId": 57073,
+      "zoneAddress": "0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52",
+      "registrationTxHash": "0x...",
+      "registrationBlockNumber": 0,
+      "registrationLogIndex": 0,
+      "orderHash": "0x...",
+      "maker": "0x...",
+      "taker": "0x0000000000000000000000000000000000000000",
+      "memo": "",
+      "order": {
+        "parameters": {},
+        "signature": "0x..."
+      },
+      "resolution": {
+        "type": "fill",
+        "txHash": "0x...",
+        "blockNumber": 0,
+        "fulfiller": "0x..."
+      }
+    }
+  ]
+}
+```
+
+Runtime behavior:
+
+- `/offers` loads current OTCRegistry events as it does today, then appends archive records converted to the same in-memory registration shape. Archive records have precomputed terminal status and should not trigger live maker-holdings checks, approval checks, cancellation checks, or Seaport status polling.
+- The default "Open" filter excludes archive records. "All" includes them, sorted with other non-open offers by order start time or registration block if start time is missing.
+- Address and collection filters inspect archived order parameters exactly like live orders.
+- Archived offer cards link to `/offer/{chainId}/{registrationTxHash}`.
+- Individual archived pages are read-only: show the archived status, assets, memo, terminal transaction link when available, and share UI where applicable; hide accept/cancel buttons, chain-switch warnings, and fillability simulations. Filled records may include `resolution.fulfiller` so open-offer share images can show the actual accepting wallet without refetching the fill transaction.
+- For archived terminal transaction links, use the stored `resolution` data instead of calling the deprecated OTCZone contract or rediscovering fills/cancellations at runtime.
+
+Trust notes:
+
+- The archived order parameters are still cryptographically anchored by the Seaport order hash. The legacy memo was not signed by OTCZone, so it is historical display data only and must not be used for trust-critical behavior.
+- Because archive data is committed source, implementation should include a small validation script or test that re-derives each archived `orderHash`, checks required fields, and fails on malformed records.
 
 ---
 
@@ -484,7 +557,7 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 
 1. User enters counterparty address (or ENS/.wei name) on the homepage, or chooses "open offer"
 2. Connects wallet (auto-skipped if already connected)
-3. Selects chain (Ethereum / Base / Polygon / Ink) — triggers wallet network switch. If the wallet has zero native gas on the selected chain, a modal warns that gas is needed and links to Uniswap (or Velodrome for Ink) to buy the native token. User can dismiss with "Continue Anyway".
+3. Selects chain (Ethereum / Base / Polygon / Sepolia while testing) — triggers wallet network switch. If the wallet has zero native gas on the selected chain, a modal warns that gas is needed and links to Uniswap or, on Sepolia, a faucet. User can dismiss with "Continue Anyway".
 4. Selects assets to offer from wallet (collectibles grid + cash list, with search/filter and manual entry fallback)
 5. Selects assets wanted in return (from taker's wallet if directed, or manual entry if open)
 6. Reviews summary: both sides, expiration (default 30 days, configurable), optional memo (max 280 bytes)
@@ -527,7 +600,12 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 Current OTCRegistry deployments and frontend constants are mirrored from
 `src/lib/constants.js`. Production deployments are verified on each chain's
 block explorer. Sepolia is a testnet deployment for development and is not part
-of the V1 production chain scope.
+of the V1 production chain scope. Ink has a live OTCRegistry deployment, but
+ocarina.trade intentionally leaves it out of the public chain picker and offers
+browser to keep the site focused on chains with meaningful NFT trading activity.
+That UI decision does not deprecate the Ink registry itself: other frontends may
+use the Ink deployment directly, and direct historical links can still resolve
+against the retained constants.
 
 | Chain | Address | Deploy block | Whitelisted ERC-20s |
 |---|---|---:|---|
@@ -535,7 +613,7 @@ of the V1 production chain scope.
 | Sepolia (testnet) | `0xfc9E05BF732FB5Aeee7e270928F349Ed3FA3cc0D` | 10876408 | WETH, USDC |
 | Base | `0x07C00000057b66A84004adD3B0f9164E744354CB` | 46185560 | WETH, USDC, USDS, EURC |
 | Polygon | `0x07C000000e10b73C0506f36BA75E50a5D3147061` | 87095296 | WETH, USDC, USDT0 |
-| Ink | `0x07C00000025CF03243E6fde1BE86af60D12fbF8f` | 45663169 | WETH, USDC, USDT0 |
+| Ink (unlisted) | `0x07C00000025CF03243E6fde1BE86af60D12fbF8f` | 45663169 | WETH, USDC, USDT0 |
 
 Deprecated addresses from the previous deployment set are retained only for
 historical reference and should not be used for new offers:
@@ -597,7 +675,7 @@ Historical audit findings, dispositions, and redeploy notes are tracked in
 ### Farcaster / Base App Mini-Apps
 - The site's architecture (no backend, path-based client routing with SPA fallback, standard EIP-1193 wallet interface) is compatible with mini-app embedding.
 - Main work: detect mini-app context and replace the wallet provider (Farcaster SDK or Coinbase Wallet SDK instead of Reown AppKit). Everything downstream (ethers.js, Seaport calls) stays the same.
-- Requires a separate OTCRegistry deployment per chain (already done for Base, Polygon, and Ink).
+- Requires a separate OTCRegistry deployment per chain (already done for Base and Polygon; an Ink deployment exists but is not currently exposed in the public UI).
 
 ### Address Identity Enhancements
 
@@ -655,7 +733,7 @@ Alchemy-specific config lives in `src/lib/alchemy.js` and `src/lib/metadata.js`:
 ### External Services
 - **Reown AppKit**: Wallet connection (requires project ID via `VITE_REOWN_PROJECT_ID`)
 - **Alchemy NFT v3 API**: Collection enumeration (`getContractsForOwner`, includes `isSpam` flag for spam detection) and per-collection NFT fetching (`getNFTsForOwner`) for the wallet picker on Alchemy-backed chains, plus single-NFT metadata fallback (`getNFTMetadata`) on the trade page (requires API key via `VITE_ALCHEMY_API_KEY`). The app remains functional without it — manual asset entry is always available, and Blockscout-backed chains can still enumerate wallet NFTs.
-- **Blockscout APIs**: Account transaction API for `OrderRegistered` discovery, logs API for filled-order transaction lookup, and v2 NFT endpoints for wallet holdings on chains without Alchemy NFT API support.
+- **Blockscout APIs**: Logs API for `OrderRegistered` discovery and filled/cancelled transaction lookup, account transaction API as a secondary discovery path, and v2 NFT endpoints for wallet holdings on chains without Alchemy NFT API support.
 - **Blockchain data**: Public RPC endpoints for receipts, order status, counters, holdings, approvals, metadata fallback calls, and partial event discovery when Blockscout is unavailable.
 - **NFT metadata fallback**: On-chain tokenURI + public IPFS gateways
 - **Hosting**: Any static file host

@@ -39,7 +39,9 @@ For NFT contracts, an offer or consideration item can target **Any Token** from 
 | Ethereum | [`0x07C0000007b4B558e2fCd47F47A573413B0Caf7C`](https://etherscan.io/address/0x07C0000007b4B558e2fCd47F47A573413B0Caf7C) |
 | Base | [`0x07C00000057b66A84004adD3B0f9164E744354CB`](https://basescan.org/address/0x07C00000057b66A84004adD3B0f9164E744354CB) |
 | Polygon | [`0x07C000000e10b73C0506f36BA75E50a5D3147061`](https://polygonscan.com/address/0x07C000000e10b73C0506f36BA75E50a5D3147061) |
-| Ink | [`0x07C00000025CF03243E6fde1BE86af60D12fbF8f`](https://explorer.inkonchain.com/address/0x07C00000025CF03243E6fde1BE86af60D12fbF8f) |
+| Ink (unlisted) | [`0x07C00000025CF03243E6fde1BE86af60D12fbF8f`](https://explorer.inkonchain.com/address/0x07C00000025CF03243E6fde1BE86af60D12fbF8f) |
+
+Ink is not shown in the ocarina.trade UI, but the OTCRegistry deployment is available for other frontends to use.
 
 ## Trust model
 
@@ -52,7 +54,7 @@ For NFT contracts, an offer or consideration item can target **Any Token** from 
 
 ## Tech stack
 
-- **Chains**: Ethereum, Base, Polygon, Ink
+- **Chains**: Ethereum, Base, Polygon
 - **Settlement**: Seaport 1.6 (immutable, canonical address across all chains)
 - **Custom contract**: OTCRegistry zone/registry (Solidity 0.8.28, Foundry)
 - **Frontend**: React, ethers.js, Vite — static site, no server required

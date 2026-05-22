@@ -2,6 +2,7 @@ import { AbiCoder, BrowserProvider, Contract, Interface, JsonRpcProvider, zeroPa
 import { Seaport } from '@opensea/seaport-js'
 import { ItemType, OrderType } from '@opensea/seaport-js/lib/constants'
 import { CHAINS, SEAPORT_ADDRESS, ZONE_ADDRESSES, ZONE_DEPLOY_BLOCKS, ZONE_ABI, WHITELISTED_ERC20 } from './constants'
+import { getArchivedOrderFromTx } from './legacy-offers'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const ZONE_HASH_VERSION = 1n
@@ -77,6 +78,11 @@ async function retry(fn, n = 3, delayMs = 500) {
       await new Promise((r) => setTimeout(r, delayMs * (i + 1)))
     }
   }
+}
+
+function blockscoutNumber(value) {
+  if (value === undefined || value === null) return undefined
+  return Number(value)
 }
 
 const APPROVAL_ABI = [
@@ -334,6 +340,9 @@ function verifyAndExtract(parsedOrLog) {
  * Returns the parsed OrderRegistered event data + decoded validated order.
  */
 export async function getOrderFromTx(chainId, txHash) {
+  const archived = getArchivedOrderFromTx(chainId, txHash)
+  if (archived) return archived
+
   const chain = CHAINS[chainId]
   if (!chain) throw new Error(`Unsupported chain ${chainId}`)
   const zoneAddress = ZONE_ADDRESSES[chainId]
@@ -530,7 +539,7 @@ export async function cancelOrder(rawProvider, orderComponents) {
 
 /**
  * Query all OrderRegistered events from the OTCRegistry contract.
- * Uses Blockscout API to get tx list, then fetches receipts via RPC.
+ * Uses Blockscout logs for full-history discovery.
  * Falls back to scanning recent blocks via RPC if Blockscout is unavailable.
  */
 export async function queryOrderEvents(chainId, zoneAddress) {
@@ -571,6 +580,44 @@ function dedupeByOrderHash(registrations) {
 }
 
 async function queryViaBlockscout(chainId, zoneAddress, chain) {
+  const viaLogs = await queryViaBlockscoutLogs(chainId, zoneAddress, chain)
+  if (viaLogs !== null) return viaLogs
+  return queryViaBlockscoutTxlist(chainId, zoneAddress, chain)
+}
+
+async function queryViaBlockscoutLogs(chainId, zoneAddress, chain) {
+  const iface = new Interface(ZONE_ABI)
+  const topic0 = iface.getEvent('OrderRegistered').topicHash
+  const startBlock = ZONE_DEPLOY_BLOCKS[chainId] ?? 0
+  const url = `${chain.blockscoutApi}?module=logs&action=getLogs&address=${zoneAddress}&fromBlock=${startBlock}&toBlock=latest&topic0=${topic0}`
+  const res = await fetch(url)
+  if (!res.ok) return null
+
+  const data = await res.json()
+  if (data.status !== '1' || !Array.isArray(data.result)) {
+    if (data.message === 'No logs found') return []
+    return null
+  }
+
+  const registrations = []
+  for (const log of data.result) {
+    let parsed
+    try { parsed = iface.parseLog({ topics: log.topics, data: log.data }) } catch { continue }
+    if (parsed?.name !== 'OrderRegistered') continue
+    const extracted = verifyAndExtract(parsed)
+    if (!extracted) continue
+    registrations.push({
+      ...extracted,
+      blockNumber: blockscoutNumber(log.blockNumber),
+      transactionHash: log.transactionHash,
+      logIndex: blockscoutNumber(log.logIndex ?? log.index) ?? 0,
+    })
+  }
+
+  return registrations
+}
+
+async function queryViaBlockscoutTxlist(chainId, zoneAddress, chain) {
   const expectedZone = zoneAddress.toLowerCase()
   const url = `${chain.blockscoutApi}?module=account&action=txlist&address=${zoneAddress}&startblock=0&endblock=99999999&sort=asc`
   const res = await fetch(url)
