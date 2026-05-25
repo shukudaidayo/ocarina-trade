@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useOutletContext } from 'react-router'
 import { getOrderFromTx, getOrderStatus, getCounter, fulfillOrder, cancelOrder, ensureApproval, simulateFulfillment, deriveOrderStatus, getFillTxHash, signTipAuthorization } from '../lib/contract'
 import { checkHoldings, checkSeaportApprovals } from '../lib/asset-checks'
-import { getVerificationStatus } from '../lib/verification'
+import { getExplorerTxUrl, getVerificationStatus } from '../lib/verification'
 import { fetchMetadata } from '../lib/metadata'
 import { resolveENS } from '../lib/ens'
 import { generateTradeImage, preloadAssetImages } from '../lib/share-image'
@@ -12,12 +12,13 @@ import { truncateAddress } from '../lib/wallet'
 import TxChecklist, { buildSteps } from '../components/tx-checklist'
 import { WHITELISTED_ERC20, CHAINS, OCARINA_SUPPORT_ADDRESS, USDC_ADDRESSES } from '../lib/constants'
 import { ItemType } from '@opensea/seaport-js/lib/constants'
-import { formatUnits } from 'ethers'
+import { Contract, formatUnits, JsonRpcProvider, parseUnits } from 'ethers'
 import { formatTokenAmount } from '../lib/wallet'
 import { friendlyContractError } from '../lib/errors'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
-const SUPPORT_TIP_USDC_UNITS = '5000000'
+const SUPPORT_TIP_DEFAULT_USDC_UNITS = 5_000_000n
+const ERC20_BALANCE_ABI = ['function balanceOf(address account) view returns (uint256)']
 
 function friendlyFillError(err) {
   const contractMsg = friendlyContractError(err, { preferSeaport: true })
@@ -94,20 +95,64 @@ function hasDuplicateERC721CriteriaSelections(params, selections) {
   })
 }
 
-function supportTipForChain(chainId) {
+function whitelistedTokenInfo(chainId, token) {
+  const normalized = token?.toLowerCase()
+  if (!normalized) return null
+  const match = Object.entries(WHITELISTED_ERC20[Number(chainId)] || {})
+    .find(([address]) => address.toLowerCase() === normalized)
+  return match?.[1] || null
+}
+
+function supportTipToken(chainId) {
   const token = USDC_ADDRESSES[Number(chainId)]
   if (!token) return null
+  const info = whitelistedTokenInfo(chainId, token)
+  return { address: token, decimals: info?.decimals ?? 6 }
+}
+
+function formatSupportTipUnits(amount, chainId) {
+  const token = supportTipToken(chainId)
+  const formatted = formatUnits(amount > 0n ? amount : 0n, token?.decimals ?? 6)
+  return formatted.includes('.') ? formatted.replace(/\.?0+$/, '') || '0' : formatted
+}
+
+function parseSupportTipAmount(value, chainId) {
+  const token = supportTipToken(chainId)
+  if (!token) return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  try {
+    return parseUnits(trimmed, token.decimals)
+  } catch {
+    return null
+  }
+}
+
+function hasTooManySupportTipDecimals(value, chainId) {
+  const token = supportTipToken(chainId)
+  const trimmed = value.trim()
+  const numericLike = /^\d*(?:\.\d*)?$/.test(trimmed)
+  if (!numericLike || !trimmed.includes('.')) return false
+  const [, fraction = ''] = trimmed.split('.')
+  return fraction.length > (token?.decimals ?? 6)
+}
+
+function supportTipForChain(chainId, amount = SUPPORT_TIP_DEFAULT_USDC_UNITS) {
+  const token = USDC_ADDRESSES[Number(chainId)]
+  if (!token) return null
+  const amountUnits = typeof amount === 'bigint' ? amount : BigInt(amount)
+  if (amountUnits <= 0n) return null
   return {
     itemType: ItemType.ERC20,
     token,
     identifier: '0',
-    amount: SUPPORT_TIP_USDC_UNITS,
+    amount: amountUnits.toString(),
     recipient: OCARINA_SUPPORT_ADDRESS,
   }
 }
 
-function supportTipAsset(chainId) {
-  const tip = supportTipForChain(chainId)
+function supportTipAsset(chainId, amount) {
+  const tip = supportTipForChain(chainId, amount)
   if (!tip) return null
   return {
     token: tip.token,
@@ -117,6 +162,16 @@ function supportTipAsset(chainId) {
     assetType: 'ERC20',
     itemType: ItemType.ERC20,
   }
+}
+
+function requiredSupportTipTokenConsideration(items, chainId) {
+  const token = USDC_ADDRESSES[Number(chainId)]?.toLowerCase()
+  if (!token) return 0n
+  return items.reduce((sum, item) => {
+    if (Number(item.itemType) !== ItemType.ERC20) return sum
+    if (item.token?.toLowerCase() !== token) return sum
+    return sum + BigInt(item.startAmount)
+  }, 0n)
 }
 
 export default function Offer() {
@@ -135,7 +190,10 @@ export default function Offer() {
   const [offerHoldings, setOfferHoldings] = useState(null) // array parallel to offer items
   const [offerApprovals, setOfferApprovals] = useState(null) // array parallel to offer items
   const [considerationHoldings, setConsiderationHoldings] = useState(null) // array parallel to consideration items
-  const [supportTipHolding, setSupportTipHolding] = useState(null)
+  const [supportTipBalance, setSupportTipBalance] = useState(null)
+  const [supportTipBalanceStatus, setSupportTipBalanceStatus] = useState('idle')
+  const [supportTipRequiredUSDC, setSupportTipRequiredUSDC] = useState(0n)
+  const [supportTipAmountInput, setSupportTipAmountInput] = useState('0')
   const [showVerifyModal, setShowVerifyModal] = useState(false)
   const [unverifiedAssets, setUnverifiedAssets] = useState([])
   const [fillTxHash, setFillTxHash] = useState(null)
@@ -324,7 +382,6 @@ export default function Offer() {
     setOfferHoldings(null)
     setOfferApprovals(null)
     setConsiderationHoldings(null)
-    setSupportTipHolding(null)
 
     const { items: resolvedOffer, missing: missingOffer } = resolveCriteriaItems(params.offer, criteriaSelections.offer)
     const { items: resolvedConsideration, missing: missingConsideration } = resolveCriteriaItems(params.consideration, criteriaSelections.consideration)
@@ -351,22 +408,85 @@ export default function Offer() {
         const withMissing = applyMissingCriteria(results, missingConsideration)
         if (!cancelled) setConsiderationHoldings(withMissing)
       })
-      if (supportOcarina) {
-        const tipAsset = supportTipAsset(chainId)
-        if (tipAsset) {
-          checkHoldings(Number(chainId), wallet.address, [tipAsset]).then((results) => {
-            if (!cancelled) setSupportTipHolding(results[0])
-          })
-        }
-      }
     } else {
       setConsiderationHoldings(null)
     }
 
     return () => { cancelled = true }
-  }, [orderData, statusLabel, chainId, wallet, criteriaSelections, supportOcarina])
+  }, [orderData, statusLabel, chainId, wallet, criteriaSelections])
 
-  const checkVerificationAndFill = useCallback(async () => {
+  // Preload the taker's USDC headroom for optional support tips.
+  useEffect(() => {
+    if (!orderData || statusLabel !== 'open') {
+      setSupportTipBalance(null)
+      setSupportTipBalanceStatus('idle')
+      setSupportTipRequiredUSDC(0n)
+      setSupportTipAmountInput('0')
+      return
+    }
+
+    const params = orderData.order.parameters
+    const takerAddr = orderData.taker
+    const isValidTaker = wallet && (
+      takerAddr === ZERO_ADDRESS ||
+      wallet.address.toLowerCase() === takerAddr.toLowerCase()
+    )
+    const tipToken = supportTipToken(chainId)
+
+    if (!isValidTaker || !tipToken) {
+      setSupportTipBalance(null)
+      setSupportTipBalanceStatus('idle')
+      setSupportTipRequiredUSDC(0n)
+      setSupportTipAmountInput('0')
+      return
+    }
+
+    let cancelled = false
+    const requiredUSDC = requiredSupportTipTokenConsideration(params.consideration, chainId)
+    setSupportTipBalance(null)
+    setSupportTipRequiredUSDC(requiredUSDC)
+    setSupportTipBalanceStatus('checking')
+
+    ;(async () => {
+      try {
+        const chain = CHAINS[Number(chainId)]
+        if (!chain) throw new Error('Unsupported chain')
+        const provider = new JsonRpcProvider(chain.rpcUrl)
+        const contract = new Contract(tipToken.address, ERC20_BALANCE_ABI, provider)
+        const balance = await contract.balanceOf(wallet.address)
+        if (cancelled) return
+        const available = balance > requiredUSDC ? balance - requiredUSDC : 0n
+        const prefill = available < SUPPORT_TIP_DEFAULT_USDC_UNITS ? 0n : SUPPORT_TIP_DEFAULT_USDC_UNITS
+        setSupportTipBalance(balance)
+        setSupportTipAmountInput(formatSupportTipUnits(prefill, chainId))
+        if (prefill === 0n) setSupportOcarina(false)
+        setSupportTipBalanceStatus('ready')
+      } catch (err) {
+        console.error('Failed to load support tip balance:', err)
+        if (!cancelled) setSupportTipBalanceStatus('error')
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [orderData, statusLabel, chainId, wallet?.address])
+
+  useEffect(() => {
+    if (!supportOcarina || !orderData || supportTipBalanceStatus !== 'ready' || supportTipBalance === null) return
+
+    const amount = parseSupportTipAmount(supportTipAmountInput, chainId)
+    const max = supportTipBalance > supportTipRequiredUSDC ? supportTipBalance - supportTipRequiredUSDC : 0n
+
+    if (max <= 0n) {
+      setSupportTipAmountInput('0')
+      setSupportOcarina(false)
+      return
+    }
+    if (amount !== null && amount > max) {
+      setSupportTipAmountInput(formatSupportTipUnits(max, chainId))
+    }
+  }, [supportOcarina, supportTipAmountInput, supportTipBalance, supportTipRequiredUSDC, supportTipBalanceStatus, chainId, orderData])
+
+  async function checkVerificationAndFill() {
     if (!orderData) return
     const params = orderData.order.parameters
     // Only check NFTs the taker is receiving (maker's offer items), not what they're giving
@@ -406,7 +526,7 @@ export default function Offer() {
     } else {
       handleFill()
     }
-  }, [orderData, chainId, criteriaSelections])
+  }
 
   const handleFill = useCallback(async () => {
     if (!wallet || !orderData) return
@@ -414,7 +534,30 @@ export default function Offer() {
     setSubmitting(true)
 
     const params = orderData.order.parameters
-    const supportTip = supportOcarina ? supportTipForChain(chainId) : null
+    let includeSupportTip = supportOcarina
+    let parsedSupportTipAmount = includeSupportTip ? parseSupportTipAmount(supportTipAmountInput, chainId) : null
+    const supportTipMax = supportTipBalance === null ? null : (
+      supportTipBalance > supportTipRequiredUSDC ? supportTipBalance - supportTipRequiredUSDC : 0n
+    )
+
+    if (includeSupportTip) {
+      if (parsedSupportTipAmount === null || parsedSupportTipAmount <= 0n) {
+        setSupportOcarina(false)
+        includeSupportTip = false
+        parsedSupportTipAmount = null
+      } else if (supportTipMax !== null && parsedSupportTipAmount > supportTipMax) {
+        setSupportTipAmountInput(formatSupportTipUnits(supportTipMax, chainId))
+        if (supportTipMax <= 0n) {
+          setSupportOcarina(false)
+          includeSupportTip = false
+          parsedSupportTipAmount = null
+        } else {
+          parsedSupportTipAmount = supportTipMax
+        }
+      }
+    }
+
+    const supportTip = includeSupportTip ? supportTipForChain(chainId, parsedSupportTipAmount) : null
     // Build taker assets from consideration items
     const takerAssets = params.consideration.map((c) => {
       const it = Number(c.itemType)
@@ -428,9 +571,9 @@ export default function Offer() {
         itemType: it,
       }
     })
-    if (supportTip) takerAssets.push(supportTipAsset(chainId))
+    if (supportTip) takerAssets.push(supportTipAsset(chainId, supportTip.amount))
 
-    const txSteps = buildSteps(takerAssets, supportTip ? 'Sign Support Tip' : null, 'Check Fillability', 'Accept Offer')
+    const txSteps = buildSteps(takerAssets, 'Check Fillability', supportTip ? 'Sign Support Tip' : null, 'Accept Offer')
     setSteps(txSteps)
 
     function updateStep(index, update) {
@@ -459,8 +602,21 @@ export default function Offer() {
         updateStep(stepIndex, { status: 'done' })
       }
 
-      let tipAuthorization = '0x'
       const tips = supportTip ? [supportTip] : []
+      const simulationIndex = txSteps.findIndex((s) => s.label === 'Check Fillability')
+      updateStep(simulationIndex, { status: 'checking' })
+      await simulateFulfillment(
+        wallet.provider,
+        Number(chainId),
+        orderData.orderHash,
+        orderData.order,
+        criteriaSelections,
+        [],
+        '0x'
+      )
+      updateStep(simulationIndex, { status: 'done' })
+
+      let tipAuthorization = '0x'
       if (supportTip) {
         const tipIndex = txSteps.findIndex((s) => s.label === 'Sign Support Tip')
         updateStep(tipIndex, { status: 'signing' })
@@ -473,19 +629,6 @@ export default function Offer() {
         )
         updateStep(tipIndex, { status: 'done' })
       }
-
-      const simulationIndex = txSteps.findIndex((s) => s.label === 'Check Fillability')
-      updateStep(simulationIndex, { status: 'checking' })
-      await simulateFulfillment(
-        wallet.provider,
-        Number(chainId),
-        orderData.orderHash,
-        orderData.order,
-        criteriaSelections,
-        tips,
-        tipAuthorization
-      )
-      updateStep(simulationIndex, { status: 'done' })
 
       const actionIndex = txSteps.findIndex((s) => s.label === 'Accept Offer')
       updateStep(actionIndex, { status: 'signing' })
@@ -515,7 +658,7 @@ export default function Offer() {
     } finally {
       setSubmitting(false)
     }
-  }, [wallet, orderData, criteriaSelections, chainId, supportOcarina])
+  }, [wallet, orderData, criteriaSelections, chainId, supportOcarina, supportTipAmountInput, supportTipBalance, supportTipRequiredUSDC, supportTipBalanceStatus])
 
   const handleCancel = useCallback(async () => {
     if (!wallet || !orderData) return
@@ -582,9 +725,16 @@ export default function Offer() {
   const makerMissing = offerHoldings && offerHoldings.some((h) => !h.held)
   const makerApprovalMissing = offerApprovals && offerApprovals.some((a) => !a.approved)
   const takerMissing = considerationHoldings && considerationHoldings.some((h) => !h.held)
-  const supportTipAvailable = Boolean(supportTipForChain(chainId))
-  const supportTipChecking = supportOcarina && !supportTipHolding
-  const supportTipMissing = supportOcarina && supportTipHolding && !supportTipHolding.held
+  const supportTipAvailable = Boolean(supportTipToken(chainId))
+  const supportTipAmount = supportTipAvailable ? parseSupportTipAmount(supportTipAmountInput, chainId) : null
+  const supportTipMax = supportTipBalance === null ? null : (
+    supportTipBalance > supportTipRequiredUSDC ? supportTipBalance - supportTipRequiredUSDC : 0n
+  )
+  const supportTipMaxLabel = supportTipMax !== null ? formatSupportTipUnits(supportTipMax, chainId) : null
+  const supportTipChecking = supportOcarina && supportTipAvailable && supportTipBalanceStatus !== 'ready' && supportTipBalanceStatus !== 'error'
+  const supportTipMissing = supportOcarina && supportTipAmount !== null && supportTipAmount > 0n && supportTipMax !== null && supportTipAmount > supportTipMax
+  const supportTipUnavailable = supportTipBalanceStatus === 'ready' && supportTipMax === 0n
+  const supportTipCheckboxDisabled = submitting || supportTipBalanceStatus === 'checking' || supportTipUnavailable
   const fillabilityChecking = isOpen && (!offerHoldings || !offerApprovals)
   const fillabilityBlocked = makerMissing || makerApprovalMissing
   const missingCriteria = hasMissingCriteria(params, criteriaSelections)
@@ -621,6 +771,39 @@ export default function Offer() {
       ...prev,
       [side]: { ...prev[side], [index]: value.trim() },
     }))
+  }
+
+  function handleSupportTipToggle(e) {
+    const checked = e.target.checked
+    if (!checked) {
+      setSupportOcarina(false)
+      return
+    }
+    if (supportTipBalanceStatus === 'ready' && supportTipMax !== null && supportTipMax <= 0n) {
+      setSupportOcarina(false)
+      return
+    }
+    if (supportTipAmount === null || supportTipAmount <= 0n) {
+      const amount = supportTipMax !== null && supportTipMax < SUPPORT_TIP_DEFAULT_USDC_UNITS
+        ? supportTipMax
+        : SUPPORT_TIP_DEFAULT_USDC_UNITS
+      setSupportTipAmountInput(formatSupportTipUnits(amount, chainId))
+    }
+    setSupportOcarina(true)
+  }
+
+  function handleSupportTipAmountChange(e) {
+    const value = e.target.value
+    if (hasTooManySupportTipDecimals(value, chainId)) return
+    const amount = parseSupportTipAmount(value, chainId)
+    if (amount !== null && supportTipMax !== null && amount > supportTipMax) {
+      setSupportTipAmountInput(formatSupportTipUnits(supportTipMax, chainId))
+      return
+    }
+    setSupportTipAmountInput(value)
+    if (supportOcarina && (value.trim() === '' || amount === null || amount <= 0n)) {
+      setSupportOcarina(false)
+    }
   }
 
   return (
@@ -680,22 +863,12 @@ export default function Offer() {
         </div>
       </div>
 
-      {isOpen && (
-        <div className={`fillability-panel${fillabilityBlocked ? ' fillability-panel-blocked' : ''}`}>
-          <p>
-            <span className="meta-label">Can be accepted:</span>{' '}
-            {fillabilityChecking ? (
-              <span>Checking...</span>
-            ) : fillabilityBlocked ? (
-              <strong>No</strong>
-            ) : (
-              <strong>Yes</strong>
-            )}
-          </p>
-          {!fillabilityChecking && makerMissing && (
+      {isOpen && !fillabilityChecking && fillabilityBlocked && (
+        <div className="fillability-panel fillability-panel-blocked">
+          {makerMissing && (
             <p>The maker no longer holds all offered assets.</p>
           )}
-          {!fillabilityChecking && makerApprovalMissing && (
+          {makerApprovalMissing && (
             <p>The maker has not approved Seaport to transfer all offered assets.</p>
           )}
         </div>
@@ -718,11 +891,9 @@ export default function Offer() {
           )
         })()}
         {(orderData.resolution?.txHash || fillTxHash) && (() => {
-          const explorers = { 1: 'https://etherscan.io', 8453: 'https://basescan.org', 137: 'https://polygonscan.com', 57073: 'https://explorer.inkonchain.com' }
-          const base = explorers[Number(chainId)] || explorers[1]
           const hash = orderData.resolution?.txHash || fillTxHash
           const label = orderData.resolution?.type === 'cancel' ? 'Cancel tx' : 'Fill tx'
-          const url = `${base}/tx/${hash}`
+          const url = getExplorerTxUrl(chainId, hash)
           return (
             <p>
               <span className="meta-label">{label}:</span>{' '}
@@ -789,7 +960,6 @@ export default function Offer() {
       )}
 
       {error && <p className="form-error">{error}</p>}
-      <TxChecklist steps={steps} />
 
       {!wallet && isOpen && (
         <p className="text-muted">Connect your wallet to accept or cancel this offer.</p>
@@ -842,37 +1012,65 @@ export default function Offer() {
             {takerMissing && (
               <p className="form-error">You do not hold all required assets to accept this offer.</p>
             )}
-            {supportTipMissing && (
-              <p className="form-error">You need at least $5 USDC to include the support tip.</p>
-            )}
             {missingCriteria && (
               <p className="form-error">Choose a token ID for each Any Token item before accepting this offer.</p>
             )}
             {duplicateERC721Criteria && (
               <p className="form-error">Each ERC-721 Any Token item must use a different token ID.</p>
             )}
-            {supportTipAvailable && (
-              <label className="support-tip-toggle">
-                <input
-                  type="checkbox"
-                  checked={supportOcarina}
-                  onChange={(e) => setSupportOcarina(e.target.checked)}
-                  disabled={submitting}
-                />
-                <span>Support Ocarina - $5 USDC</span>
-              </label>
-            )}
-            <button className="btn btn-primary" onClick={checkVerificationAndFill} disabled={submitting || blocked}>
-              {submitting ? 'Accepting...' : 'Accept Offer'}
-            </button>
+            <div className="offer-actions">
+              {supportTipAvailable && (
+                <>
+                  <div className="support-tip-control">
+                    <label className="support-tip-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={supportOcarina}
+                        onChange={handleSupportTipToggle}
+                        disabled={supportTipCheckboxDisabled}
+                      />
+                      <span>Support Ocarina</span>
+                    </label>
+                    <div className="support-tip-amount">
+                      <input
+                        className="support-tip-input"
+                        type="text"
+                        inputMode="decimal"
+                        value={supportTipAmountInput}
+                        onChange={handleSupportTipAmountChange}
+                        disabled={submitting || supportTipBalanceStatus === 'checking' || supportTipUnavailable}
+                        aria-label="Support tip amount"
+                      />
+                      <span>USDC</span>
+                    </div>
+                  </div>
+                  {supportTipBalanceStatus === 'checking' && (
+                    <p className="support-tip-hint">Checking available USDC...</p>
+                  )}
+                  {supportTipBalanceStatus === 'ready' && supportTipMaxLabel !== null && (
+                    <p className="support-tip-hint">Available for tip: {supportTipMaxLabel} USDC</p>
+                  )}
+                  {supportTipBalanceStatus === 'error' && (
+                    <p className="support-tip-hint">Balance unavailable; enter tip manually.</p>
+                  )}
+                </>
+              )}
+              <button className="btn btn-primary" onClick={checkVerificationAndFill} disabled={submitting || blocked}>
+                {submitting ? 'Accepting...' : 'Accept Offer'}
+              </button>
+              <TxChecklist steps={steps} />
+            </div>
           </>
         )
       })()}
 
       {wallet && !wrongChain && isOpen && isMaker && (
-        <button className="btn btn-cancel" onClick={handleCancel} disabled={submitting}>
-          {submitting ? 'Cancelling...' : 'Cancel Offer'}
-        </button>
+        <div className="offer-actions">
+          <button className="btn btn-cancel" onClick={handleCancel} disabled={submitting}>
+            {submitting ? 'Cancelling...' : 'Cancel Offer'}
+          </button>
+          <TxChecklist steps={steps} />
+        </div>
       )}
 
       {showVerifyModal && (

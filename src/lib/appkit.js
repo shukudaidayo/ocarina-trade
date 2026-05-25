@@ -1,6 +1,6 @@
 import { createAppKit } from '@reown/appkit/react'
 import { EthersAdapter } from '@reown/appkit-adapter-ethers'
-import { mainnet, base, polygon, sepolia } from '@reown/appkit/networks'
+import { mainnet, base, polygon } from '@reown/appkit/networks'
 
 const projectId = import.meta.env.VITE_REOWN_PROJECT_ID
 
@@ -11,9 +11,9 @@ const metadata = {
   icons: [],
 }
 
-createAppKit({
+export const appKit = createAppKit({
   adapters: [new EthersAdapter()],
-  networks: [mainnet, base, polygon, sepolia],
+  networks: [mainnet, base, polygon],
   metadata,
   projectId,
   features: {
@@ -24,3 +24,7 @@ createAppKit({
     '--w3m-border-radius-master': '4px',
   },
 })
+
+export function clearAppKitProfileImage() {
+  appKit?.setProfileImage?.(null, 'eip155')
+}

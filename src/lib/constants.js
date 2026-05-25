@@ -10,7 +10,7 @@ export const CHAINS = {
 
 // Chains shown in the public create/offers UI. CHAINS and deployment constants
 // may keep additional historical or direct-link-compatible networks.
-export const SELECTABLE_CHAIN_IDS = [1, 8453, 137, 11155111]
+export const SELECTABLE_CHAIN_IDS = [1, 8453, 137]
 
 // Seaport 1.6 canonical address (same on all chains)
 export const SEAPORT_ADDRESS = '0x0000000000000068F116a894984e2DB1123eB395'

@@ -7,7 +7,7 @@ import { fetchMetadata } from '../lib/metadata'
 import { resolveENSName } from '../lib/ens'
 import AddressDisplay from '../components/address-display'
 import { ZONE_ADDRESSES, SELECTABLE_CHAIN_IDS, CHAINS, WHITELISTED_ERC20 } from '../lib/constants'
-import { formatUnits } from 'ethers'
+import { formatUnits, isAddress } from 'ethers'
 import { formatTokenAmount } from '../lib/wallet'
 import { ItemType } from '@opensea/seaport-js/lib/constants'
 
@@ -54,6 +54,7 @@ export default function Offers() {
 
   // Resolved address filter (from ENS or direct)
   const [resolvedAddress, setResolvedAddress] = useState('')
+  const [addressFilterStatus, setAddressFilterStatus] = useState('idle')
   // Local input state for text fields (synced to URL on blur/enter)
   const [addressInput, setAddressInput] = useState(addressParam)
   const [collectionInput, setCollectionInput] = useState(collectionParam)
@@ -79,16 +80,35 @@ export default function Offers() {
 
   // Resolve ENS name for address filter
   useEffect(() => {
-    if (!addressParam) { setResolvedAddress(''); return }
-    if (addressParam.startsWith('0x') && addressParam.length === 42) {
-      setResolvedAddress(addressParam.toLowerCase())
+    const value = addressParam.trim()
+    if (!value) {
+      setResolvedAddress('')
+      setAddressFilterStatus('idle')
+      return
+    }
+    if (isAddress(value)) {
+      setResolvedAddress(value.toLowerCase())
+      setAddressFilterStatus('valid')
+      return
+    }
+    if (value.startsWith('0x')) {
+      setResolvedAddress('')
+      setAddressFilterStatus('invalid')
       return
     }
     // Try ENS resolution
     let cancelled = false
-    resolveENSName(addressParam).then((addr) => {
+    setResolvedAddress('')
+    setAddressFilterStatus('resolving')
+    resolveENSName(value).then((addr) => {
       if (cancelled) return
-      setResolvedAddress(addr ? addr.toLowerCase() : '')
+      if (addr && isAddress(addr)) {
+        setResolvedAddress(addr.toLowerCase())
+        setAddressFilterStatus('valid')
+      } else {
+        setResolvedAddress('')
+        setAddressFilterStatus('invalid')
+      }
     })
     return () => { cancelled = true }
   }, [addressParam])
@@ -163,7 +183,7 @@ export default function Offers() {
   // Reset pagination when filters change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
-  }, [chainFilter, category, resolvedAddress, collectionParam])
+  }, [chainFilter, category, resolvedAddress, addressFilterStatus, collectionParam])
 
   // Check maker holdings for open offers after the order statuses have loaded.
   useEffect(() => {
@@ -211,6 +231,7 @@ export default function Offers() {
   }, [orders])
 
   const normalizedCollection = collectionParam ? collectionParam.toLowerCase() : ''
+  const addressFilterActive = Boolean(addressParam.trim())
 
   const filtered = orders.filter((o) => {
     // Chain filter
@@ -222,7 +243,8 @@ export default function Offers() {
     }
 
     // Address filter — match maker or taker
-    if (resolvedAddress) {
+    if (addressFilterActive) {
+      if (addressFilterStatus !== 'valid' || !resolvedAddress) return false
       const isMaker = o.maker.toLowerCase() === resolvedAddress
       const isTaker = o.taker !== ZERO_ADDRESS && o.taker.toLowerCase() === resolvedAddress
       if (!isMaker && !isTaker) return false
@@ -324,9 +346,15 @@ export default function Offers() {
 
       {loading && <p className="text-muted">Loading offers...</p>}
       {error && <p className="form-error">{error}</p>}
+      {!loading && !error && addressFilterStatus === 'resolving' && (
+        <p className="text-muted">Resolving address filter...</p>
+      )}
+      {!loading && !error && addressFilterStatus === 'invalid' && (
+        <p className="form-error">Enter a valid address, ENS name, or .wei name.</p>
+      )}
       {partial && !loading && <p className="text-muted">Only showing recent offers. Older offers may be missing.</p>}
 
-      {!loading && !error && filtered.length === 0 && (
+      {!loading && !error && addressFilterStatus !== 'resolving' && addressFilterStatus !== 'invalid' && filtered.length === 0 && (
         <p className="text-muted">No offers found.</p>
       )}
 

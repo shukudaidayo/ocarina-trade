@@ -35,7 +35,7 @@ const questions = [
   {
     id: 'assets',
     q: 'What assets can I trade?',
-    a: <><p>Ocarina supports most onchain collectibles, WETH, and a limited number of stablecoins. We limit which cash assets you can include in trades so that you never have to wonder if "USDC" is the real deal or a worthless token with the same name.</p><p>Currently, Ocarina supports Ethereum, Base, and Polygon. This test branch also exposes Sepolia while the new registry flow is being validated. Cross-chain trades are not supported — both sides of the trade have to be on the same chain. Solana is not supported.</p></>,
+    a: <><p>Ocarina supports most onchain collectibles, WETH, and a limited number of stablecoins. We limit which cash assets you can include in trades so that you never have to wonder if "USDC" is the real deal or a worthless token with the same name.</p><p>Currently, Ocarina supports Ethereum, Base, and Polygon. Cross-chain trades are not supported — both sides of the trade have to be on the same chain. Solana is not supported.</p></>,
   },
   {
     id: 'fees',
