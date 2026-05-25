@@ -29,7 +29,6 @@ export default function TxChecklist({ steps }) {
           <span className="tx-step-icon">{STATUS_ICONS[step.status]}</span>
           <span className="tx-step-label">{step.label}</span>
           <span className="tx-step-status">{STATUS_LABELS[step.status]}</span>
-          {step.error && <span className="tx-step-error">{step.error}</span>}
         </div>
       ))}
     </div>

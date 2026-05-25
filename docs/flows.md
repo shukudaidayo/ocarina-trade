@@ -13,12 +13,16 @@ sequenceDiagram
     Note over F: Any Token uses ERC721_WITH_CRITERIA / ERC1155_WITH_CRITERIA<br/>with identifierOrCriteria = 0 (wildcard)
     F->>F: Encode zoneHash: taker in low 160 bits,<br/>original consideration count + version in upper bits
 
+    F->>F: Check known Seaport-incompatible NFT blocklist
+    F->>F: Check offered exact assets are still held
+
     F->>W: setApprovalForAll(seaport, true)
     W->>S: Approval tx (per collection)
     S-->>F: Confirmed
+    Note over F,W: If an approval prompt stalls before a tx hash,<br/>the checklist can restart. After a tx hash,<br/>the UI shows View / Check transaction instead.
 
-    F->>F: Check offered exact assets are still held
     F->>F: Check Seaport approvals are visible onchain
+    F->>F: Static-call exact ERC-721 / ERC-1155 transfer from Seaport
     Note over F: Maker-side criteria items are approval-checked only;<br/>ownership depends on token ID chosen at fulfillment
 
     F->>W: EIP-712 sign Seaport order (no gas)
@@ -32,6 +36,7 @@ sequenceDiagram
 
     F->>W: registerOrder(reg)
     W->>Z: registerOrder tx (submitter can be maker or a relayer)
+    Note over F,W: If the register prompt stalls before a tx hash,<br/>the checklist can restart. After a tx hash,<br/>the UI shows View transaction / Check registration.
     Z->>Z: Check memo length ≤ 280
     Z->>Z: Check startTime <= block.timestamp <= endTime
     Z->>Z: Assert zone == address(this)
@@ -103,17 +108,12 @@ sequenceDiagram
         F->>F: Use selected token IDs for holdings / verification checks
     end
 
-    opt Optional cash tip enabled by a frontend
-        F->>F: Append native / whitelisted ERC-20 tip consideration items
-        F->>W: EIP-712 sign TipAuthorization (no gas)
-        Note over F,W: Covers orderHash, fulfiller, TipItem[] tips, deadline
-        W-->>F: Tip authorization signature
-        F->>F: ABI-encode (deadline, signature) as advancedOrder.extraData
-    end
+    F->>F: Check known Seaport-incompatible NFT blocklist
 
     F->>W: setApprovalForAll(seaport, true)
     W->>S: Approval tx (per collection)
     S-->>F: Confirmed
+    Note over F,W: If an approval prompt stalls before a tx hash,<br/>the checklist can restart. After a tx hash,<br/>the UI shows View / Check transaction instead.
 
     alt Exact-item no-tip order
         F->>S: fulfillOrder.staticCall(order, bytes32(0))
@@ -122,6 +122,14 @@ sequenceDiagram
     end
     S-->>F: Simulation succeeds or reverts before final tx
 
+    opt Optional cash tip enabled by a frontend
+        F->>F: Append native / whitelisted ERC-20 tip consideration items
+        F->>W: EIP-712 sign TipAuthorization (no gas)
+        Note over F,W: Covers orderHash, fulfiller, TipItem[] tips, deadline
+        W-->>F: Tip authorization signature
+        F->>F: ABI-encode (deadline, signature) as advancedOrder.extraData
+    end
+
     alt Exact-item no-tip order
         F->>W: fulfillOrder(order, bytes32(0))
         W->>S: fulfillOrder tx
@@ -129,6 +137,7 @@ sequenceDiagram
         F->>W: fulfillAdvancedOrder(advancedOrder, criteriaResolvers, bytes32(0), address(0))
         W->>S: fulfillAdvancedOrder tx
     end
+    Note over F,W: If the fill prompt stalls before a tx hash,<br/>the checklist can restart. After a tx hash,<br/>the UI shows View / Check transaction instead.
 
     S->>Z: authorizeOrder(zoneParameters)
     Z->>Z: Require msg.sender == seaport

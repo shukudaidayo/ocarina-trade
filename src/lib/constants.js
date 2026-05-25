@@ -16,6 +16,44 @@ export const SELECTABLE_CHAIN_IDS = [1, 8453, 137]
 export const SEAPORT_ADDRESS = '0x0000000000000068F116a894984e2DB1123eB395'
 export const OCARINA_SUPPORT_ADDRESS = '0x9a659894e5D115846767dB0e1685744c452E7a6e'
 
+// NFT collections known to block transfers initiated by canonical Seaport.
+// These are checked before approval prompts so users do not spend gas approving
+// collections that cannot settle through Ocarina's zero-conduit Seaport flow.
+export const SEAPORT_BLOCKED_NFTS = {
+  1: {
+    '0x909b059d494069e28cc16182d078977039bd970e': {
+      name: 'Konnex SBT',
+      reason: 'it is a soulbound collection',
+    },
+    '0xaf55e7bbb9ffc768d5e26dd7c3f2907774423943': {
+      name: 'dTelecom Origin ID',
+      reason: 'it is a soulbound collection',
+    },
+  },
+  8453: {
+    '0xBB5eC6fD4B61723BD45C399840F1d868840ca16F': {
+      name: 'Beezie Collectibles',
+      reason: 'its transfer validator does not whitelist Seaport',
+    },
+    '0x326f14942f8899406e3224bd63e9f250d275a52e': {
+      name: 'Guild Pin',
+      reason: 'it is a soulbound collection',
+    },
+    '0xda2730be54d8ac94e26e87ae01aeddecb57e7953': {
+      name: 'x402Toadz',
+      reason: 'its transfer validator requires Seaport or the sender to be whitelisted',
+    },
+    '0x3b444632de3f319ecdc11baf2aa063e48c4511ca': {
+      name: 'NFToshis 2.0',
+      reason: 'its transfer validator uses a whitelist policy that does not include Seaport',
+    },
+    '0x9ffaf75645c17132cd12d3044c8cbb52d34677b9': {
+      name: 'Drifter DNA Packs',
+      reason: 'its transfer validator does not whitelist Seaport',
+    },
+  },
+}
+
 // OTCRegistry contract addresses per chain
 export const ZONE_ADDRESSES = {
   1: '0x07C0000007b4B558e2fCd47F47A573413B0Caf7C',

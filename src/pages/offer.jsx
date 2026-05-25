@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useOutletContext } from 'react-router'
 import { getOrderFromTx, getOrderStatus, getCounter, fulfillOrder, cancelOrder, ensureApproval, simulateFulfillment, deriveOrderStatus, getFillTxHash, signTipAuthorization } from '../lib/contract'
-import { checkHoldings, checkSeaportApprovals } from '../lib/asset-checks'
+import { checkHoldings, checkKnownSeaportBlockedCollections, checkSeaportApprovals } from '../lib/asset-checks'
 import { getExplorerTxUrl, getVerificationStatus } from '../lib/verification'
 import { fetchMetadata } from '../lib/metadata'
 import { resolveENS } from '../lib/ens'
@@ -12,13 +12,15 @@ import { truncateAddress } from '../lib/wallet'
 import TxChecklist, { buildSteps } from '../components/tx-checklist'
 import { WHITELISTED_ERC20, CHAINS, OCARINA_SUPPORT_ADDRESS, USDC_ADDRESSES } from '../lib/constants'
 import { ItemType } from '@opensea/seaport-js/lib/constants'
-import { Contract, formatUnits, JsonRpcProvider, parseUnits } from 'ethers'
+import { BrowserProvider, Contract, formatUnits, JsonRpcProvider, parseUnits } from 'ethers'
 import { formatTokenAmount } from '../lib/wallet'
 import { friendlyContractError } from '../lib/errors'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const SUPPORT_TIP_DEFAULT_USDC_UNITS = 5_000_000n
 const ERC20_BALANCE_ABI = ['function balanceOf(address account) view returns (uint256)']
+const STUCK_STEP_DELAY_MS = 30000
+const RETRYABLE_ACCEPT_STEPS = new Set(['Sign Support Tip', 'Accept Offer'])
 
 function friendlyFillError(err) {
   const contractMsg = friendlyContractError(err, { preferSeaport: true })
@@ -36,7 +38,20 @@ function friendlyFillError(err) {
   if (nested.includes('insufficient funds') || raw.includes('insufficient funds')) {
     return 'Insufficient funds for gas.'
   }
-  return err.reason || err.shortMessage || 'Transaction failed.'
+  return err.reason || err.shortMessage || err.message || 'Transaction failed.'
+}
+
+function assertNoBlockedCollections(results) {
+  const failed = results.find((result) => result.allowed === false)
+  if (failed) throw new Error(failed.reason || 'A selected collection cannot be traded through Seaport.')
+}
+
+function acceptStuckStepMessage(label) {
+  if (label === 'Accept Offer' || label.startsWith('Approve ')) {
+    return `Still waiting on ${label}. If your wallet prompt is stuck and you have not submitted the transaction, reject or close any pending wallet request, then retry the checklist.`
+  }
+
+  return `Still waiting on ${label}. If your wallet prompt is stuck, reject or close any pending wallet request, then retry the checklist.`
 }
 
 function isCriteriaItem(item) {
@@ -197,12 +212,52 @@ export default function Offer() {
   const [showVerifyModal, setShowVerifyModal] = useState(false)
   const [unverifiedAssets, setUnverifiedAssets] = useState([])
   const [fillTxHash, setFillTxHash] = useState(null)
+  const [submittedActionTx, setSubmittedActionTx] = useState(null)
+  const [submittedActionCheck, setSubmittedActionCheck] = useState(null)
+  const [checkingSubmittedAction, setCheckingSubmittedAction] = useState(false)
+  const [stuckActionStep, setStuckActionStep] = useState(null)
   const [fulfiller, setFulfiller] = useState(null)
   const [shareImageBlob, setShareImageBlob] = useState(null)
   const [shareImageUrl, setShareImageUrl] = useState(null)
   const [generatingImage, setGeneratingImage] = useState(false)
   const [criteriaSelections, setCriteriaSelections] = useState({ offer: {}, consideration: {} })
   const [supportOcarina, setSupportOcarina] = useState(false)
+  const actionRunIdRef = useRef(0)
+  const actionStuckTimerRef = useRef(null)
+  const submittedActionTxRef = useRef(null)
+
+  function clearActionStuckTimer() {
+    if (actionStuckTimerRef.current) {
+      clearTimeout(actionStuckTimerRef.current)
+      actionStuckTimerRef.current = null
+    }
+  }
+
+  function rememberSubmittedActionTx(tx) {
+    submittedActionTxRef.current = tx
+    setSubmittedActionTx(tx)
+  }
+
+  function scheduleActionStuckPrompt(step, runId) {
+    clearActionStuckTimer()
+    setStuckActionStep(null)
+
+    if (step.status !== 'signing' || (!RETRYABLE_ACCEPT_STEPS.has(step.label) && step.type !== 'approval')) return
+
+    actionStuckTimerRef.current = setTimeout(() => {
+      if (actionRunIdRef.current === runId && !submittedActionTxRef.current) {
+        setStuckActionStep({ label: step.label })
+      }
+    }, STUCK_STEP_DELAY_MS)
+  }
+
+  function retryActionChecklist() {
+    clearActionStuckTimer()
+    setStuckActionStep(null)
+    handleFill()
+  }
+
+  useEffect(() => () => clearActionStuckTimer(), [])
 
   // Fetch order data from tx hash
   useEffect(() => {
@@ -530,7 +585,13 @@ export default function Offer() {
 
   const handleFill = useCallback(async () => {
     if (!wallet || !orderData) return
+    const runId = actionRunIdRef.current + 1
+    actionRunIdRef.current = runId
+    clearActionStuckTimer()
     setError(null)
+    setSubmittedActionCheck(null)
+    setStuckActionStep(null)
+    rememberSubmittedActionTx(null)
     setSubmitting(true)
 
     const params = orderData.order.parameters
@@ -573,15 +634,37 @@ export default function Offer() {
     })
     if (supportTip) takerAssets.push(supportTipAsset(chainId, supportTip.amount))
 
-    const txSteps = buildSteps(takerAssets, 'Check Fillability', supportTip ? 'Sign Support Tip' : null, 'Accept Offer')
+    const txSteps = [
+      { label: 'Check Trade Assets', status: 'pending', type: 'action' },
+      ...buildSteps(takerAssets, 'Check Fillability', supportTip ? 'Sign Support Tip' : null, 'Accept Offer'),
+    ]
     setSteps(txSteps)
 
     function updateStep(index, update) {
+      if (actionRunIdRef.current !== runId) return
       txSteps[index] = { ...txSteps[index], ...update }
       setSteps([...txSteps])
+      scheduleActionStuckPrompt(txSteps[index], runId)
     }
 
+    function assertActive() {
+      if (actionRunIdRef.current !== runId) {
+        throw new Error('Checklist run was superseded.')
+      }
+    }
+
+    let pendingTx = null
+
     try {
+      const assetCheckIndex = txSteps.findIndex((s) => s.label === 'Check Trade Assets')
+      updateStep(assetCheckIndex, { status: 'checking' })
+      assertNoBlockedCollections(checkKnownSeaportBlockedCollections(Number(chainId), [
+        ...params.offer,
+        ...params.consideration,
+      ]))
+      assertActive()
+      updateStep(assetCheckIndex, { status: 'done' })
+
       const approvalSteps = txSteps.filter((s) => s.type === 'approval')
       for (let i = 0; i < approvalSteps.length; i++) {
         const step = approvalSteps[i]
@@ -595,9 +678,15 @@ export default function Offer() {
           ? matchingAssets.reduce((sum, a) => sum + BigInt(a.amount), 0n).toString()
           : undefined
         const tx = await ensureApproval(wallet.provider, step.tokenAddress, wallet.address, asset?.itemType ?? ItemType.ERC721, totalAmount)
+        assertActive()
         if (tx) {
+          pendingTx = { kind: 'approval', label: step.label, hash: tx.hash }
+          rememberSubmittedActionTx(pendingTx)
           updateStep(stepIndex, { status: 'confirming' })
           await tx.wait()
+          assertActive()
+          pendingTx = null
+          rememberSubmittedActionTx(null)
         }
         updateStep(stepIndex, { status: 'done' })
       }
@@ -614,6 +703,7 @@ export default function Offer() {
         [],
         '0x'
       )
+      assertActive()
       updateStep(simulationIndex, { status: 'done' })
 
       let tipAuthorization = '0x'
@@ -627,12 +717,13 @@ export default function Offer() {
           orderData.orderHash,
           tips
         )
+        assertActive()
         updateStep(tipIndex, { status: 'done' })
       }
 
       const actionIndex = txSteps.findIndex((s) => s.label === 'Accept Offer')
       updateStep(actionIndex, { status: 'signing' })
-      const { wait } = await fulfillOrder(
+      const { tx, wait } = await fulfillOrder(
         wallet.provider,
         Number(chainId),
         orderData.orderHash,
@@ -641,14 +732,24 @@ export default function Offer() {
         tips,
         tipAuthorization
       )
+      assertActive()
+      pendingTx = { kind: 'fill', label: 'Accept Offer', hash: tx.hash }
+      rememberSubmittedActionTx(pendingTx)
+      setFillTxHash(tx.hash)
       updateStep(actionIndex, { status: 'confirming' })
       const receipt = await wait()
+      assertActive()
       updateStep(actionIndex, { status: 'done' })
 
-      setFillTxHash(receipt.hash)
+      rememberSubmittedActionTx(null)
+      setFillTxHash(receipt.hash || tx.hash)
       setStatusLabel('filled')
     } catch (err) {
+      if (actionRunIdRef.current !== runId) return
       console.error(err)
+      clearActionStuckTimer()
+      setStuckActionStep(null)
+      if (pendingTx) rememberSubmittedActionTx(pendingTx)
       const msg = friendlyFillError(err)
       const failedIndex = txSteps.findIndex((s) => s.status === 'checking' || s.status === 'signing' || s.status === 'confirming')
       if (failedIndex !== -1) {
@@ -656,9 +757,45 @@ export default function Offer() {
       }
       setError(msg)
     } finally {
-      setSubmitting(false)
+      if (actionRunIdRef.current === runId) setSubmitting(false)
     }
   }, [wallet, orderData, criteriaSelections, chainId, supportOcarina, supportTipAmountInput, supportTipBalance, supportTipRequiredUSDC, supportTipBalanceStatus])
+
+  async function checkSubmittedActionTransaction() {
+    if (!wallet || !submittedActionTx || checkingSubmittedAction) return
+
+    setCheckingSubmittedAction(true)
+    setSubmittedActionCheck(null)
+
+    try {
+      const provider = new BrowserProvider(wallet.provider)
+      const receipt = await provider.getTransactionReceipt(submittedActionTx.hash)
+      if (!receipt) {
+        setSubmittedActionCheck(`${submittedActionTx.label} transaction is not confirmed yet.`)
+        return
+      }
+      if (receipt.status === 0) {
+        setSubmittedActionCheck(`${submittedActionTx.label} transaction reverted.`)
+        return
+      }
+
+      if (submittedActionTx.kind === 'fill') {
+        rememberSubmittedActionTx(null)
+        setFillTxHash(submittedActionTx.hash)
+        setStatusLabel('filled')
+        setSubmitting(false)
+        return
+      }
+
+      setSubmittedActionCheck(`${submittedActionTx.label} confirmed. Restarting the checklist...`)
+      rememberSubmittedActionTx(null)
+      handleFill()
+    } catch (err) {
+      setSubmittedActionCheck(`${submittedActionTx.label} is not confirmed yet. ${friendlyFillError(err)}`)
+    } finally {
+      setCheckingSubmittedAction(false)
+    }
+  }
 
   const handleCancel = useCallback(async () => {
     if (!wallet || !orderData) return
@@ -959,8 +1096,6 @@ export default function Offer() {
         </div>
       )}
 
-      {error && <p className="form-error">{error}</p>}
-
       {!wallet && isOpen && (
         <p className="text-muted">Connect your wallet to accept or cancel this offer.</p>
       )}
@@ -1055,10 +1190,44 @@ export default function Offer() {
                   )}
                 </>
               )}
-              <button className="btn btn-primary" onClick={checkVerificationAndFill} disabled={submitting || blocked}>
+              <button className="btn btn-primary" onClick={checkVerificationAndFill} disabled={submitting || blocked || Boolean(submittedActionTx)}>
                 {submitting ? 'Accepting...' : 'Accept Offer'}
               </button>
               <TxChecklist steps={steps} />
+              {stuckActionStep && !submittedActionTx && !error && (
+                <div className="execute-stuck">
+                  <p className="form-status">
+                    {acceptStuckStepMessage(stuckActionStep.label)}
+                  </p>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={retryActionChecklist}>
+                    Retry checklist
+                  </button>
+                </div>
+              )}
+              {submittedActionTx && (
+                <div className="submitted-transaction">
+                  <p className="form-status">
+                    {submitting
+                      ? `${submittedActionTx.label} transaction submitted. Waiting for confirmation...`
+                      : `${submittedActionTx.label} transaction was submitted. Check whether it confirmed before retrying this offer.`}
+                  </p>
+                  <div className="submitted-registration-actions">
+                    <a href={getExplorerTxUrl(chainId, submittedActionTx.hash)} target="_blank" rel="noreferrer">
+                      View transaction
+                    </a>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={checkSubmittedActionTransaction}
+                      disabled={checkingSubmittedAction}
+                    >
+                      {checkingSubmittedAction ? 'Checking...' : 'Check transaction'}
+                    </button>
+                  </div>
+                  {submittedActionCheck && <p className="form-error">{submittedActionCheck}</p>}
+                </div>
+              )}
+              {error && <p className="form-error">{error}</p>}
             </div>
           </>
         )
@@ -1070,6 +1239,7 @@ export default function Offer() {
             {submitting ? 'Cancelling...' : 'Cancel Offer'}
           </button>
           <TxChecklist steps={steps} />
+          {error && <p className="form-error">{error}</p>}
         </div>
       )}
 

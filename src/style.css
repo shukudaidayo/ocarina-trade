@@ -1390,12 +1390,6 @@ footer {
 .tx-step-done .tx-step-icon { color: #4c4; }
 .tx-step-failed .tx-step-icon { color: #c44; }
 
-.tx-step-error {
-  display: block;
-  font-size: 0.75rem;
-  color: #c44;
-}
-
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -2058,6 +2052,26 @@ footer {
 
 .execute-error {
   margin-top: 1rem;
+}
+
+.execute-stuck {
+  margin-top: 1rem;
+}
+
+.submitted-registration {
+  margin-top: 1rem;
+}
+
+.submitted-transaction {
+  margin-top: 0.25rem;
+}
+
+.submitted-registration-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
 }
 
 /* ── Done ──────────────────────────────────────────────────── */
