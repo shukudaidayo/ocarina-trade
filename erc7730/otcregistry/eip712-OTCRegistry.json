@@ -1,0 +1,151 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ethereum/clear-signing-erc7730-registry/master/specs/erc7730-v2.schema.json",
+  "context": {
+    "$id": "OTCRegistry EIP-712",
+    "eip712": {
+      "domain": { "name": "OTCRegistry", "version": "1" },
+      "deployments": [
+        { "chainId": 1, "address": "0x07C0000007b4B558e2fCd47F47A573413B0Caf7C" },
+        { "chainId": 11155111, "address": "0xfc9E05BF732FB5Aeee7e270928F349Ed3FA3cc0D" },
+        { "chainId": 8453, "address": "0x07C00000057b66A84004adD3B0f9164E744354CB" },
+        { "chainId": 137, "address": "0x07C000000e10b73C0506f36BA75E50a5D3147061" },
+        { "chainId": 57073, "address": "0x07C00000025CF03243E6fde1BE86af60D12fbF8f" }
+      ],
+      "schemas": [
+        {
+          "primaryType": "OrderRegistration",
+          "types": {
+            "EIP712Domain": [
+              { "name": "name", "type": "string" },
+              { "name": "version", "type": "string" },
+              { "name": "chainId", "type": "uint256" },
+              { "name": "verifyingContract", "type": "address" }
+            ],
+            "OrderRegistration": [
+              { "name": "orderHash", "type": "bytes32" },
+              { "name": "seaportSignature", "type": "bytes" },
+              { "name": "memo", "type": "string" }
+            ]
+          }
+        },
+        {
+          "primaryType": "TipAuthorization",
+          "types": {
+            "EIP712Domain": [
+              { "name": "name", "type": "string" },
+              { "name": "version", "type": "string" },
+              { "name": "chainId", "type": "uint256" },
+              { "name": "verifyingContract", "type": "address" }
+            ],
+            "TipAuthorization": [
+              { "name": "orderHash", "type": "bytes32" },
+              { "name": "fulfiller", "type": "address" },
+              { "name": "tips", "type": "TipItem[]" },
+              { "name": "deadline", "type": "uint256" }
+            ],
+            "TipItem": [
+              { "name": "itemType", "type": "uint8" },
+              { "name": "token", "type": "address" },
+              { "name": "identifier", "type": "uint256" },
+              { "name": "amount", "type": "uint256" },
+              { "name": "recipient", "type": "address" }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "metadata": {
+    "owner": "OTCRegistry",
+    "contractName": "OTCRegistry",
+    "info": { "url": "https://ocarina.trade/" },
+    "constants": {
+      "nativeAssetAddress": "0x0000000000000000000000000000000000000000"
+    },
+    "enums": {
+      "tipItemType": {
+        "0": "Native",
+        "1": "ERC-20"
+      }
+    }
+  },
+  "display": {
+    "formats": {
+      "OrderRegistration(bytes32 orderHash,bytes seaportSignature,string memo)": {
+        "intent": "Authorize offer",
+        "fields": [
+          {
+            "path": "orderHash",
+            "label": "Order hash",
+            "format": "raw",
+            "visible": "always"
+          },
+          {
+            "path": "memo",
+            "label": "Memo",
+            "format": "raw",
+            "visible": { "ifNotIn": [""] }
+          },
+          { "path": "seaportSignature", "label": "Seaport signature", "visible": "never" }
+        ]
+      },
+      "TipAuthorization(bytes32 orderHash,address fulfiller,TipItem[] tips,uint256 deadline)TipItem(uint8 itemType,address token,uint256 identifier,uint256 amount,address recipient)": {
+        "intent": "Authorize tip",
+        "fields": [
+          {
+            "path": "orderHash",
+            "label": "Order hash",
+            "format": "raw",
+            "visible": "always"
+          },
+          {
+            "path": "fulfiller",
+            "label": "Fulfiller",
+            "format": "addressName",
+            "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
+            "visible": "always"
+          },
+          {
+            "path": "tips.[]",
+            "label": "Tip",
+            "fields": [
+              {
+                "path": "itemType",
+                "label": "Tip type",
+                "format": "enum",
+                "params": { "$ref": "$.metadata.enums.tipItemType" },
+                "visible": "always"
+              },
+              {
+                "path": "amount",
+                "label": "Tip amount",
+                "format": "tokenAmount",
+                "params": {
+                  "tokenPath": "token",
+                  "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
+                },
+                "visible": "always"
+              },
+              {
+                "path": "recipient",
+                "label": "Tip recipient",
+                "format": "addressName",
+                "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
+                "visible": "always"
+              },
+              { "path": "token", "label": "Tip token", "visible": "never" },
+              { "path": "identifier", "label": "Tip identifier", "visible": { "mustBe": ["0"] } }
+            ]
+          },
+          {
+            "path": "deadline",
+            "label": "Valid until",
+            "format": "date",
+            "params": { "encoding": "timestamp" },
+            "visible": "always"
+          }
+        ]
+      }
+    }
+  }
+}
