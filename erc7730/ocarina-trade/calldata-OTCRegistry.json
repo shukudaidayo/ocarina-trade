@@ -72,7 +72,7 @@
     }
   },
   "metadata": {
-    "owner": "OTCRegistry",
+    "owner": "Ocarina",
     "contractName": "OTCRegistry",
     "info": { "url": "https://ocarina.trade/" },
     "constants": {

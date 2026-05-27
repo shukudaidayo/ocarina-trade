@@ -1,6 +1,6 @@
-# OTCRegistry ERC-7730 Drafts
+# Ocarina Trade ERC-7730 Drafts
 
-Draft ERC-7730 clear-signing descriptors for OTCRegistry live here before upstream registry submission.
+Draft ERC-7730 clear-signing descriptors for Ocarina Trade's OTCRegistry integration live here before upstream registry submission.
 
 - `calldata-OTCRegistry.json` describes `registerOrder(OrderRegistration)` transactions.
 - `eip712-OTCRegistry.json` describes the OTCRegistry maker registration signature and optional tip authorization signature.
@@ -9,7 +9,7 @@ Draft ERC-7730 clear-signing descriptors for OTCRegistry live here before upstre
 Validate with the official tooling once installed:
 
 ```sh
-erc7730 lint erc7730/otcregistry/calldata-OTCRegistry.json erc7730/otcregistry/eip712-OTCRegistry.json
+erc7730 lint erc7730/ocarina-trade/calldata-OTCRegistry.json erc7730/ocarina-trade/eip712-OTCRegistry.json
 ```
 
 For ABI-backed calldata validation, run with network access and `ETHERSCAN_API_KEY` loaded. The calldata descriptor uses the canonical nested tuple display key expected by the Etherscan-backed linter. Array item displays are flattened to explicit `[].field` paths, with hidden array-root fields included so root-path display checks stay quiet without changing wallet output.
@@ -18,7 +18,7 @@ For ABI-backed calldata validation, run with network access and `ETHERSCAN_API_K
 
 When preparing the PR for `ethereum/clear-signing-erc7730-registry`:
 
-1. Create `registry/otcregistry/` in the registry fork.
+1. Create `registry/ocarina-trade/` in the registry fork.
 2. Copy only the descriptor and test files:
    - `calldata-OTCRegistry.json`
    - `eip712-OTCRegistry.json`
@@ -28,7 +28,7 @@ When preparing the PR for `ethereum/clear-signing-erc7730-registry`:
 4. Change descriptor schemas to `"../../specs/erc7730-v2.schema.json"`.
 5. Change test schemas to `"../../../specs/erc7730-tests.schema.json"`.
 6. Confirm every listed deployment is verified on Sourcify.
-7. Run `erc7730 lint registry/otcregistry/calldata-OTCRegistry.json registry/otcregistry/eip712-OTCRegistry.json`.
+7. Run `erc7730 lint registry/ocarina-trade/calldata-OTCRegistry.json registry/ocarina-trade/eip712-OTCRegistry.json`.
 
 ## Upstream Schema Note
 
