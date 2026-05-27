@@ -30,6 +30,6 @@ When preparing the PR for `ethereum/clear-signing-erc7730-registry`:
 6. Confirm every listed deployment is verified on Sourcify.
 7. Run `erc7730 lint registry/otcregistry/calldata-OTCRegistry.json registry/otcregistry/eip712-OTCRegistry.json`.
 
-## Known Upstream Schema Caveat
+## Upstream Schema Note
 
-The calldata descriptor uses the canonical nested ABI signature for `registerOrder(((...) reg)` as the display format key. The current upstream `check-jsonschema` regex may reject that deeply nested signature key, and selector-style keys appear to hit the same schema limitation even though ERC-7730 allows selectors. `erc7730 lint` accepts the descriptor; mention this in the upstream PR if schema validation flags the calldata format key.
+The calldata descriptor uses the struct shorthand `registerOrder(OrderRegistration reg)` as the display format key. This avoids upstream schema validation rejecting the canonical deeply nested tuple signature while keeping the ABI components explicit in `context.contract.abi`.
