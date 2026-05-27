@@ -12,7 +12,7 @@ Validate with the official tooling once installed:
 erc7730 lint erc7730/otcregistry/calldata-OTCRegistry.json erc7730/otcregistry/eip712-OTCRegistry.json
 ```
 
-For ABI-backed calldata validation, run with network access and `ETHERSCAN_API_KEY` loaded. The current linter may warn that the `offer[]` and `consideration[]` array roots are missing display fields even though their child fields are intentionally rendered through grouped array item descriptors.
+For ABI-backed calldata validation, run with network access and `ETHERSCAN_API_KEY` loaded. Array item displays are flattened to explicit `[].field` paths because upstream schema validation is stricter than `erc7730 lint` around grouped array display fields.
 
 ## Upstream PR packaging
 
@@ -30,12 +30,6 @@ When preparing the PR for `ethereum/clear-signing-erc7730-registry`:
 6. Confirm every listed deployment is verified on Sourcify.
 7. Run `erc7730 lint registry/otcregistry/calldata-OTCRegistry.json registry/otcregistry/eip712-OTCRegistry.json`.
 
-## Known linter warning
+## Known Upstream Schema Caveat
 
-The ABI-backed linter currently warns that `#.reg.components.offer.[]` and `#.reg.components.consideration.[]` are missing display fields. This is expected: those array roots are grouped descriptors, and the useful child fields are rendered inside each item. Adding duplicate hidden fields for the roots makes the linter quiet, but duplicate paths are not used by existing registry entries and could be less portable across wallet implementations.
-
-Approved registry entries with the same warning shape include:
-
-- `registry/safe/calldata-BatchExecutor.json`: displays `calls.[].data` but lints with missing `#.calls.[]`.
-- `registry/morpho/calldata-MorphoBundlerV3.json`: displays `#.bundle.[].data` but lints with missing `#.bundle.[]`.
-- `registry/paraswap/calldata-AugustusSwapper-v6.2.json`: displays / hides child paths under `#.orders.[]` but lints with missing `#.orders.[]`.
+The calldata descriptor uses the canonical nested ABI signature for `registerOrder(((...) reg)` as the display format key. The current upstream `check-jsonschema` regex may reject that deeply nested signature key, and selector-style keys appear to hit the same schema limitation even though ERC-7730 allows selectors. `erc7730 lint` accepts the descriptor; mention this in the upstream PR if schema validation flags the calldata format key.

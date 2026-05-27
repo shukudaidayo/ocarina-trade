@@ -106,37 +106,31 @@
             "visible": "always"
           },
           {
-            "path": "tips.[]",
-            "label": "Tip",
-            "fields": [
-              {
-                "path": "itemType",
-                "label": "Tip type",
-                "format": "enum",
-                "params": { "$ref": "$.metadata.enums.tipItemType" },
-                "visible": "always"
-              },
-              {
-                "path": "amount",
-                "label": "Tip amount",
-                "format": "tokenAmount",
-                "params": {
-                  "tokenPath": "token",
-                  "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
-                },
-                "visible": "always"
-              },
-              {
-                "path": "recipient",
-                "label": "Tip recipient",
-                "format": "addressName",
-                "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
-                "visible": "always"
-              },
-              { "path": "token", "label": "Tip token", "visible": "never" },
-              { "path": "identifier", "label": "Tip identifier", "visible": { "mustBe": ["0"] } }
-            ]
+            "path": "tips.[].itemType",
+            "label": "Tip type",
+            "format": "enum",
+            "params": { "$ref": "$.metadata.enums.tipItemType" },
+            "visible": "always"
           },
+          {
+            "path": "tips.[].amount",
+            "label": "Tip amount",
+            "format": "tokenAmount",
+            "params": {
+              "tokenPath": "tips.[].token",
+              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
+            },
+            "visible": "always"
+          },
+          {
+            "path": "tips.[].recipient",
+            "label": "Tip recipient",
+            "format": "addressName",
+            "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
+            "visible": "always"
+          },
+          { "path": "tips.[].token", "label": "Tip token", "visible": "never" },
+          { "path": "tips.[].identifier", "label": "Tip identifier", "visible": { "mustBe": ["0"] } },
           {
             "path": "deadline",
             "label": "Valid until",
