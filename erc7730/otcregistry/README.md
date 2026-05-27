@@ -12,7 +12,7 @@ Validate with the official tooling once installed:
 erc7730 lint erc7730/otcregistry/calldata-OTCRegistry.json erc7730/otcregistry/eip712-OTCRegistry.json
 ```
 
-For ABI-backed calldata validation, run with network access and `ETHERSCAN_API_KEY` loaded. Array item displays are flattened to explicit `[].field` paths because upstream schema validation is stricter than `erc7730 lint` around grouped array display fields.
+For ABI-backed calldata validation, run with network access and `ETHERSCAN_API_KEY` loaded. The calldata descriptor uses the canonical nested tuple display key expected by the Etherscan-backed linter. Array item displays are flattened to explicit `[].field` paths, with hidden array-root fields included so root-path display checks stay quiet without changing wallet output.
 
 ## Upstream PR packaging
 
@@ -32,4 +32,4 @@ When preparing the PR for `ethereum/clear-signing-erc7730-registry`:
 
 ## Upstream Schema Note
 
-The calldata descriptor uses the struct shorthand `registerOrder(OrderRegistration reg)` as the display format key. This avoids upstream schema validation rejecting the canonical deeply nested tuple signature while keeping the ABI components explicit in `context.contract.abi`.
+Direct `check-jsonschema` validation may reject the canonical `registerOrder(((...) reg)` display key because the current schema regex does not handle this level of nested tuple signature. The descriptor keeps the canonical key anyway because the Etherscan-backed `erc7730 lint` path needs it to match decoded calldata. Hidden `#.reg.components.offer.[]` and `#.reg.components.consideration.[]` root fields are present only to avoid missing-root warnings; the visible item details are still rendered through the flattened child paths.

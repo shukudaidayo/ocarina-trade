@@ -91,7 +91,7 @@
   },
   "display": {
     "formats": {
-      "registerOrder(OrderRegistration reg)": {
+      "registerOrder(((address offerer,address zone,(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)[] offer,(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 counter) components,bytes seaportSignature,bytes signature,string memo) reg)": {
         "intent": "Publish offer",
         "fields": [
           {
@@ -107,6 +107,7 @@
             "format": "raw",
             "visible": { "ifNotIn": [""] }
           },
+          { "path": "#.reg.components.offer.[]", "label": "Offer items", "visible": "never" },
           {
             "path": "#.reg.components.offer.[].itemType",
             "label": "Give type",
@@ -138,6 +139,7 @@
             "visible": "always"
           },
           { "path": "#.reg.components.offer.[].endAmount", "label": "Give end amount", "visible": "never" },
+          { "path": "#.reg.components.consideration.[]", "label": "Consideration items", "visible": "never" },
           {
             "path": "#.reg.components.consideration.[].itemType",
             "label": "Receive type",
