@@ -86,12 +86,13 @@
       },
       "expectedTexts": [
         "Authorize tip",
-        "Fulfiller",
+        "Tip from",
         "0x2222222222222222222222222222222222222222",
         "Tip amount",
         "1 USDC",
-        "Tip recipient",
-        "0x9a659894e5D115846767dB0e1685744c452E7a6e"
+        "Tip to",
+        "0x9a659894e5D115846767dB0e1685744c452E7a6e",
+        "Expires"
       ]
     },
     {
@@ -149,16 +150,14 @@
       },
       "expectedTexts": [
         "Authorize tip",
-        "Fulfiller",
+        "Tip from",
         "0x2222222222222222222222222222222222222222",
-        "Tip type",
-        "Native",
         "0.01 ETH",
-        "Tip recipient",
+        "Tip to",
         "0x9a659894e5D115846767dB0e1685744c452E7a6e",
-        "ERC-20",
         "2 USDC",
-        "0x7777777777777777777777777777777777777777"
+        "0x7777777777777777777777777777777777777777",
+        "Expires"
       ]
     }
   ]

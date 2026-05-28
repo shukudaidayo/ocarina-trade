@@ -1,6 +1,6 @@
-# Ocarina Trade ERC-7730 Drafts
+# Ocarina ERC-7730 Drafts
 
-Draft ERC-7730 clear-signing descriptors for Ocarina Trade's OTCRegistry integration live here before upstream registry submission.
+Draft ERC-7730 clear-signing descriptors for Ocarina's OTCRegistry integration live here before upstream registry submission.
 
 - `calldata-OTCRegistry.json` describes `registerOrder(OrderRegistration)` transactions.
 - `eip712-OTCRegistry.json` describes the OTCRegistry maker registration signature and optional tip authorization signature.

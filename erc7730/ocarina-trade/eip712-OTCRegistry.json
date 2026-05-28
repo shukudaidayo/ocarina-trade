@@ -61,12 +61,6 @@
     "info": { "url": "https://ocarina.trade/" },
     "constants": {
       "nativeAssetAddress": "0x0000000000000000000000000000000000000000"
-    },
-    "enums": {
-      "tipItemType": {
-        "0": "Native",
-        "1": "ERC-20"
-      }
     }
   },
   "display": {
@@ -91,6 +85,7 @@
       },
       "TipAuthorization(bytes32 orderHash,address fulfiller,TipItem[] tips,uint256 deadline)TipItem(uint8 itemType,address token,uint256 identifier,uint256 amount,address recipient)": {
         "intent": "Authorize tip",
+        "interpolatedIntent": "Authorize {tips.[].amount} tip to {tips.[].recipient}",
         "fields": [
           {
             "path": "orderHash",
@@ -100,31 +95,26 @@
           },
           {
             "path": "fulfiller",
-            "label": "Fulfiller",
+            "label": "Tip from",
             "format": "addressName",
             "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
             "visible": "always"
           },
-          {
-            "path": "tips.[].itemType",
-            "label": "Tip type",
-            "format": "enum",
-            "params": { "$ref": "$.metadata.enums.tipItemType" },
-            "visible": "always"
-          },
+          { "path": "tips.[].itemType", "label": "Tip type", "visible": { "mustBe": ["0", "1"] } },
           {
             "path": "tips.[].amount",
             "label": "Tip amount",
             "format": "tokenAmount",
             "params": {
               "tokenPath": "tips.[].token",
-              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
+              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress",
+              "chainIdPath": "@.chainId"
             },
             "visible": "always"
           },
           {
             "path": "tips.[].recipient",
-            "label": "Tip recipient",
+            "label": "Tip to",
             "format": "addressName",
             "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
             "visible": "always"
@@ -133,7 +123,7 @@
           { "path": "tips.[].identifier", "label": "Tip identifier", "visible": { "mustBe": ["0"] } },
           {
             "path": "deadline",
-            "label": "Valid until",
+            "label": "Expires",
             "format": "date",
             "params": { "encoding": "timestamp" },
             "visible": "always"

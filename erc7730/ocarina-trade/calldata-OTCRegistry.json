@@ -77,16 +77,6 @@
     "info": { "url": "https://ocarina.trade/" },
     "constants": {
       "nativeAssetAddress": "0x0000000000000000000000000000000000000000"
-    },
-    "enums": {
-      "itemType": {
-        "0": "Native",
-        "1": "ERC-20",
-        "2": "ERC-721",
-        "3": "ERC-1155",
-        "4": "ERC-721 criteria",
-        "5": "ERC-1155 criteria"
-      }
     }
   },
   "display": {
@@ -108,45 +98,34 @@
             "visible": { "ifNotIn": [""] }
           },
           { "path": "#.reg.components.offer.[]", "label": "Offer items", "visible": "never" },
-          {
-            "path": "#.reg.components.offer.[].itemType",
-            "label": "Give type",
-            "format": "enum",
-            "params": { "$ref": "$.metadata.enums.itemType" },
-            "visible": "always"
-          },
+          { "path": "#.reg.components.offer.[].itemType", "label": "Offer type", "visible": { "mustBe": ["1", "2", "3", "4", "5"] } },
           {
             "path": "#.reg.components.offer.[].token",
-            "label": "Give token",
+            "label": "Offer token",
             "format": "addressName",
             "params": { "types": ["token", "collection", "contract"] },
             "visible": "always"
           },
           {
             "path": "#.reg.components.offer.[].identifierOrCriteria",
-            "label": "Give ID/criteria",
+            "label": "Offer ID/criteria",
             "format": "raw",
             "visible": "always"
           },
           {
             "path": "#.reg.components.offer.[].startAmount",
-            "label": "Give amount",
+            "label": "Offer amount",
             "format": "tokenAmount",
             "params": {
               "tokenPath": "#.reg.components.offer.[].token",
-              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
+              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress",
+              "chainIdPath": "@.chainId"
             },
             "visible": "always"
           },
-          { "path": "#.reg.components.offer.[].endAmount", "label": "Give end amount", "visible": "never" },
+          { "path": "#.reg.components.offer.[].endAmount", "label": "Offer end amount", "visible": "never" },
           { "path": "#.reg.components.consideration.[]", "label": "Consideration items", "visible": "never" },
-          {
-            "path": "#.reg.components.consideration.[].itemType",
-            "label": "Receive type",
-            "format": "enum",
-            "params": { "$ref": "$.metadata.enums.itemType" },
-            "visible": "always"
-          },
+          { "path": "#.reg.components.consideration.[].itemType", "label": "Receive type", "visible": { "mustBe": ["0", "1", "2", "3", "4", "5"] } },
           {
             "path": "#.reg.components.consideration.[].token",
             "label": "Receive token",
@@ -166,7 +145,8 @@
             "format": "tokenAmount",
             "params": {
               "tokenPath": "#.reg.components.consideration.[].token",
-              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
+              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress",
+              "chainIdPath": "@.chainId"
             },
             "visible": "always"
           },
@@ -177,12 +157,7 @@
             "label": "Order type",
             "visible": { "mustBe": ["2"] }
           },
-          {
-            "path": "#.reg.components.startTime",
-            "label": "Valid from",
-            "format": "date",
-            "params": { "encoding": "timestamp" }
-          },
+          { "path": "#.reg.components.startTime", "label": "Valid from", "visible": "never" },
           {
             "path": "#.reg.components.endTime",
             "label": "Expires",
@@ -191,10 +166,11 @@
             "visible": "always"
           },
           {
-            "path": "#.reg.components.zoneHash",
-            "label": "Taker metadata",
-            "format": "raw",
-            "visible": "always"
+            "path": "#.reg.components.zoneHash.[-20:]",
+            "label": "Taker",
+            "format": "addressName",
+            "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
+            "visible": { "ifNotIn": ["0x0000000000000000000000000000000000000000"] }
           },
           {
             "path": "#.reg.components.zone",
