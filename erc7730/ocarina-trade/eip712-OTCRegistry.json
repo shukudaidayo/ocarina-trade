@@ -85,7 +85,7 @@
       },
       "TipAuthorization(bytes32 orderHash,address fulfiller,TipItem[] tips,uint256 deadline)TipItem(uint8 itemType,address token,uint256 identifier,uint256 amount,address recipient)": {
         "intent": "Authorize tip",
-        "interpolatedIntent": "Authorize {tips.[].amount} tip to {tips.[].recipient}",
+        "interpolatedIntent": "Authorize {tips.[].amount} tip",
         "fields": [
           {
             "path": "orderHash",
@@ -107,8 +107,7 @@
             "format": "tokenAmount",
             "params": {
               "tokenPath": "tips.[].token",
-              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress",
-              "chainIdPath": "@.chainId"
+              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
             },
             "visible": "always"
           },

@@ -118,8 +118,7 @@
             "format": "tokenAmount",
             "params": {
               "tokenPath": "#.reg.components.offer.[].token",
-              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress",
-              "chainIdPath": "@.chainId"
+              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
             },
             "visible": "always"
           },
@@ -145,8 +144,7 @@
             "format": "tokenAmount",
             "params": {
               "tokenPath": "#.reg.components.consideration.[].token",
-              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress",
-              "chainIdPath": "@.chainId"
+              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
             },
             "visible": "always"
           },
