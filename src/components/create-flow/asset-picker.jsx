@@ -258,6 +258,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
 
   // Auto-detect token type when manual address changes
   useEffect(() => {
+    let cancelled = false
     setManualType(null)
     setManualTypeError(null)
     if (!manualAddress.match(/^0x[0-9a-fA-F]{40}$/)) return
@@ -266,18 +267,36 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
     setManualTypeLoading(true)
     const provider = new JsonRpcProvider(chain.rpcUrl)
     const contract = new Contract(manualAddress, ERC165_ABI, provider)
-    Promise.all([
-      contract.supportsInterface('0xd9b67a26'), // ERC-1155
-      contract.supportsInterface('0x80ac58cd'), // ERC-721
-    ]).then(([is1155, is721]) => {
-      if (is1155) setManualType('ERC1155')
-      else if (is721) setManualType('ERC721')
-      else setManualTypeError('Unrecognized contract')
+    provider.getCode(manualAddress).then((code) => {
+      if (cancelled) return
+      if (code === '0x') {
+        setManualTypeError(`No contract found on ${chain.name}`)
+        setManualTypeLoading(false)
+        return null
+      }
+      return Promise.all([
+        contract.supportsInterface('0xd9b67a26'), // ERC-1155
+        contract.supportsInterface('0x80ac58cd'), // ERC-721
+      ])
+    }).then((result) => {
+      if (cancelled || !result) return
+      const [is1155, is721] = result
+      if (is1155) {
+        setManualType('ERC1155')
+      } else if (is721) {
+        setManualType('ERC721')
+      } else {
+        setManualTypeError('Contract is not ERC-721 or ERC-1155')
+      }
       setManualTypeLoading(false)
     }).catch(() => {
-      setManualTypeError('Unrecognized contract')
+      if (cancelled) return
+      setManualTypeError(`Could not check contract on ${chain.name}`)
       setManualTypeLoading(false)
     })
+    return () => {
+      cancelled = true
+    }
   }, [manualAddress, chainId])
 
   const [openCollection, setOpenCollection] = useState(null)
