@@ -1,35 +1,34 @@
-# Ocarina ERC-7730 Drafts
+# Ocarina ERC-7730 Registry Mirror
 
-Draft ERC-7730 clear-signing descriptors for Ocarina's OTCRegistry integration live here before upstream registry submission.
+This directory mirrors the ERC-7730 clear-signing descriptors submitted for Ocarina's OTCRegistry integration. The active upstream submission lives in the `ocarina-trade` branch of the registry fork:
+
+https://github.com/shukudaidayo/clear-signing-erc7730-registry/tree/ocarina-trade/registry/ocarina-trade
+
+Once merged, the canonical public copy for wallet distribution is expected to live under `registry/ocarina-trade/` in:
+
+https://github.com/ethereum/clear-signing-erc7730-registry
 
 - `calldata-OTCRegistry.json` describes `registerOrder(OrderRegistration)` transactions.
 - `eip712-OTCRegistry.json` describes the OTCRegistry maker registration signature and optional tip authorization signature.
 - `tests/` contains reference samples in the format expected by the ERC-7730 registry.
 
-Validate with the official tooling once installed:
+The JSON files intentionally keep registry-relative `$schema` paths such as `../../specs/erc7730-v2.schema.json`, matching the upstream PR package. For validation, run the official tooling from a checkout of `clear-signing-erc7730-registry` after copying or syncing these files into `registry/ocarina-trade/`:
 
 ```sh
-erc7730 lint erc7730/ocarina-trade/calldata-OTCRegistry.json erc7730/ocarina-trade/eip712-OTCRegistry.json
+erc7730 lint registry/ocarina-trade/calldata-OTCRegistry.json registry/ocarina-trade/eip712-OTCRegistry.json
 ```
 
-For ABI-backed calldata validation, run with network access and `ETHERSCAN_API_KEY` loaded. The calldata descriptor uses the canonical nested tuple display key expected by the Etherscan-backed linter. Array item displays are flattened to explicit `[].field` paths, with hidden array-root fields included so root-path display checks stay quiet without changing wallet output.
+For ABI-backed calldata validation, run with network access and `ETHERSCAN_API_KEY` loaded. The calldata descriptor uses the canonical nested tuple display key expected by the Etherscan-backed linter.
 
-## Upstream PR packaging
+## Maintenance
 
-When preparing the PR for `ethereum/clear-signing-erc7730-registry`:
+Treat the upstream registry PR, and eventually the merged upstream registry folder, as the canonical wallet-distribution source. This local copy exists so the Ocarina repo keeps a reviewed snapshot next to the contract constants, tests, and spec history.
 
-1. Create `registry/ocarina-trade/` in the registry fork.
-2. Copy only the descriptor and test files:
-   - `calldata-OTCRegistry.json`
-   - `eip712-OTCRegistry.json`
-   - `tests/calldata-OTCRegistry.tests.json`
-   - `tests/eip712-OTCRegistry.tests.json`
-3. Do not copy this README into the upstream registry folder.
-4. Change descriptor schemas to `"../../specs/erc7730-v2.schema.json"`.
-5. Change test schemas to `"../../../specs/erc7730-tests.schema.json"`.
-6. Confirm every listed deployment is verified on Sourcify.
-7. Run `erc7730 lint registry/ocarina-trade/calldata-OTCRegistry.json registry/ocarina-trade/eip712-OTCRegistry.json`.
+When the upstream PR changes, mirror the four JSON files here:
 
-## Upstream Schema Note
+- `calldata-OTCRegistry.json`
+- `eip712-OTCRegistry.json`
+- `tests/calldata-OTCRegistry.tests.json`
+- `tests/eip712-OTCRegistry.tests.json`
 
-Direct `check-jsonschema` validation may reject the canonical `registerOrder(((...) reg)` display key because the current schema regex does not handle this level of nested tuple signature. The descriptor keeps the canonical key anyway because the Etherscan-backed `erc7730 lint` path needs it to match decoded calldata. Hidden `#.reg.components.offer.[]` and `#.reg.components.consideration.[]` root fields are present only to avoid missing-root warnings; the visible item details are still rendered through the flattened child paths.
+Do not copy this README into the upstream registry folder.

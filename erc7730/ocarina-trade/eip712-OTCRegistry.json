@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/ethereum/clear-signing-erc7730-registry/master/specs/erc7730-v2.schema.json",
+  "$schema": "../../specs/erc7730-v2.schema.json",
   "context": {
     "$id": "OTCRegistry EIP-712",
     "eip712": {
@@ -59,27 +59,15 @@
     "owner": "Ocarina",
     "contractName": "OTCRegistry",
     "info": { "url": "https://ocarina.trade/" },
-    "constants": {
-      "nativeAssetAddress": "0x0000000000000000000000000000000000000000"
-    }
+    "constants": { "nativeAssetAddress": "0x0000000000000000000000000000000000000000" }
   },
   "display": {
     "formats": {
       "OrderRegistration(bytes32 orderHash,bytes seaportSignature,string memo)": {
         "intent": "Authorize offer",
         "fields": [
-          {
-            "path": "orderHash",
-            "label": "Order hash",
-            "format": "raw",
-            "visible": "always"
-          },
-          {
-            "path": "memo",
-            "label": "Memo",
-            "format": "raw",
-            "visible": { "ifNotIn": [""] }
-          },
+          { "path": "orderHash", "label": "Order hash", "format": "raw", "visible": "always" },
+          { "path": "memo", "label": "Memo", "format": "raw", "visible": { "ifNotIn": [""] } },
           { "path": "seaportSignature", "label": "Seaport signature", "visible": "never" }
         ]
       },
@@ -87,11 +75,30 @@
         "intent": "Authorize tip",
         "interpolatedIntent": "Authorize {tips.[].amount} tip",
         "fields": [
+          { "path": "tips.[]", "label": "Tips", "visible": "never" },
           {
-            "path": "orderHash",
-            "label": "Order hash",
-            "format": "raw",
-            "visible": "always"
+            "label": "Tips",
+            "iteration": "bundled",
+            "fields": [
+              { "path": "tips.[].itemType", "label": "Tip type", "visible": { "mustBe": ["0", "1"] } },
+              {
+                "path": "tips.[].amount",
+                "label": "Tip amount",
+                "format": "tokenAmount",
+                "separator": "Tip {index}",
+                "params": { "tokenPath": "tips.[].token", "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress" },
+                "visible": "always"
+              },
+              {
+                "path": "tips.[].recipient",
+                "label": "Tip to",
+                "format": "addressName",
+                "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
+                "visible": "always"
+              },
+              { "path": "tips.[].token", "label": "Tip token", "visible": "never" },
+              { "path": "tips.[].identifier", "label": "Tip identifier", "visible": { "mustBe": ["0"] } }
+            ]
           },
           {
             "path": "fulfiller",
@@ -100,33 +107,8 @@
             "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
             "visible": "always"
           },
-          { "path": "tips.[].itemType", "label": "Tip type", "visible": { "mustBe": ["0", "1"] } },
-          {
-            "path": "tips.[].amount",
-            "label": "Tip amount",
-            "format": "tokenAmount",
-            "params": {
-              "tokenPath": "tips.[].token",
-              "nativeCurrencyAddress": "$.metadata.constants.nativeAssetAddress"
-            },
-            "visible": "always"
-          },
-          {
-            "path": "tips.[].recipient",
-            "label": "Tip to",
-            "format": "addressName",
-            "params": { "types": ["wallet", "eoa", "contract"], "sources": ["local", "ens"] },
-            "visible": "always"
-          },
-          { "path": "tips.[].token", "label": "Tip token", "visible": "never" },
-          { "path": "tips.[].identifier", "label": "Tip identifier", "visible": { "mustBe": ["0"] } },
-          {
-            "path": "deadline",
-            "label": "Expires",
-            "format": "date",
-            "params": { "encoding": "timestamp" },
-            "visible": "always"
-          }
+          { "path": "deadline", "label": "Expires", "format": "date", "params": { "encoding": "timestamp" }, "visible": "always" },
+          { "path": "orderHash", "label": "Order hash", "visible": "never" }
         ]
       }
     }
