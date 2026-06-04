@@ -62,16 +62,26 @@ export async function getVerificationStatus(chainId, tokenAddress, metadataName)
   }
 }
 
-/**
- * Get the Etherscan URL for a contract address on a given chain.
- */
-export function getEtherscanUrl(chainId, address) {
+export function getExplorerBaseUrl(chainId) {
   const explorers = {
     1: 'https://etherscan.io',
+    11155111: 'https://sepolia.etherscan.io',
     8453: 'https://basescan.org',
     137: 'https://polygonscan.com',
     57073: 'https://explorer.inkonchain.com',
   }
-  const base = explorers[chainId] || explorers[1]
+  return explorers[Number(chainId)] || explorers[1]
+}
+
+/**
+ * Get the Etherscan URL for a contract address on a given chain.
+ */
+export function getEtherscanUrl(chainId, address) {
+  const base = getExplorerBaseUrl(chainId)
   return `${base}/address/${address}`
+}
+
+export function getExplorerTxUrl(chainId, txHash) {
+  const base = getExplorerBaseUrl(chainId)
+  return `${base}/tx/${txHash}`
 }

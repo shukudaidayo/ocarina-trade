@@ -2,24 +2,84 @@ export const IPFS_GATEWAY = 'https://ipfs.io/ipfs/'
 
 export const CHAINS = {
   1: { name: 'Ethereum', nativeSymbol: 'ETH', rpcUrl: 'https://ethereum-rpc.publicnode.com', blockscoutApi: 'https://eth.blockscout.com/api' },
+  11155111: { name: 'Sepolia', nativeSymbol: 'ETH', rpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com', blockscoutApi: 'https://eth-sepolia.blockscout.com/api' },
   8453: { name: 'Base', nativeSymbol: 'ETH', rpcUrl: 'https://base-rpc.publicnode.com', blockscoutApi: 'https://base.blockscout.com/api' },
   137: { name: 'Polygon', nativeSymbol: 'POL', rpcUrl: 'https://polygon-bor-rpc.publicnode.com', blockscoutApi: 'https://polygon.blockscout.com/api' },
   57073: { name: 'Ink', nativeSymbol: 'ETH', rpcUrl: 'https://rpc-gel.inkonchain.com', blockscoutApi: 'https://explorer.inkonchain.com/api' },
 }
 
+// Chains shown in the public create/offers UI. CHAINS and deployment constants
+// may keep additional historical or direct-link-compatible networks.
+export const SELECTABLE_CHAIN_IDS = [1, 8453, 137]
+
 // Seaport 1.6 canonical address (same on all chains)
 export const SEAPORT_ADDRESS = '0x0000000000000068F116a894984e2DB1123eB395'
+export const OCARINA_SUPPORT_ADDRESS = '0x9a659894e5D115846767dB0e1685744c452E7a6e'
 
-// OTCZone contract addresses per chain
+// NFT collections known to block transfers initiated by canonical Seaport.
+// These are checked before approval prompts so users do not spend gas approving
+// collections that cannot settle through Ocarina's zero-conduit Seaport flow.
+export const SEAPORT_BLOCKED_NFTS = {
+  1: {
+    '0x909b059d494069e28cc16182d078977039bd970e': {
+      name: 'Konnex SBT',
+      reason: 'it is a soulbound collection',
+    },
+    '0xaf55e7bbb9ffc768d5e26dd7c3f2907774423943': {
+      name: 'dTelecom Origin ID',
+      reason: 'it is a soulbound collection',
+    },
+  },
+  8453: {
+    '0xBB5eC6fD4B61723BD45C399840F1d868840ca16F': {
+      name: 'Beezie Collectibles',
+      reason: 'its transfer validator does not whitelist Seaport',
+    },
+    '0x326f14942f8899406e3224bd63e9f250d275a52e': {
+      name: 'Guild Pin',
+      reason: 'it is a soulbound collection',
+    },
+    '0xda2730be54d8ac94e26e87ae01aeddecb57e7953': {
+      name: 'x402Toadz',
+      reason: 'its transfer validator requires Seaport or the sender to be whitelisted',
+    },
+    '0x3b444632de3f319ecdc11baf2aa063e48c4511ca': {
+      name: 'NFToshis 2.0',
+      reason: 'its transfer validator uses a whitelist policy that does not include Seaport',
+    },
+    '0x9ffaf75645c17132cd12d3044c8cbb52d34677b9': {
+      name: 'Drifter DNA Packs',
+      reason: 'its transfer validator does not whitelist Seaport',
+    },
+  },
+}
+
+// OTCRegistry contract addresses per chain
 export const ZONE_ADDRESSES = {
+  1: '0x07C0000007b4B558e2fCd47F47A573413B0Caf7C',
+  11155111: '0xfc9E05BF732FB5Aeee7e270928F349Ed3FA3cc0D',
+  8453: '0x07C00000057b66A84004adD3B0f9164E744354CB',
+  137: '0x07C000000e10b73C0506f36BA75E50a5D3147061',
+  57073: '0x07C00000025CF03243E6fde1BE86af60D12fbF8f',
+}
+
+// Block number at or before OTCRegistry deployment — used as fromBlock for event queries
+export const ZONE_DEPLOY_BLOCKS = {
+  1: 25125826,
+  11155111: 10876408,
+  8453: 46185560,
+  137: 87095296,
+  57073: 45663169,
+}
+
+export const DEPRECATED_OTCZONE_ADDRESSES = {
   1: '0x07C0000003f04E1b0b040A5B6c8AAB792d9546fc',
   8453: '0x07C00000090AdB1D14b093C1A6b40135779af27C',
   137: '0x07C000000b63fEe6aC08B91ad7aD3d999b28d740',
   57073: '0x07C00000042fFF5Ad7cDC3A2aF3F4A8708B8CD52',
 }
 
-// Block number at or before OTCZone deployment — used as fromBlock for event queries
-export const ZONE_DEPLOY_BLOCKS = {
+export const DEPRECATED_OTCZONE_DEPLOY_BLOCKS = {
   1: 24694574,
   8453: 43637380,
   137: 84472380,
@@ -34,6 +94,10 @@ export const WHITELISTED_ERC20 = {
     '0xdAC17F958D2ee523a2206206994597C13D831ec7': { symbol: 'USDT', decimals: 6 },
     '0xdC035D45d973E3EC169d2276DDab16f1e407384F': { symbol: 'USDS', decimals: 18 },
     '0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c': { symbol: 'EURC', decimals: 6 },
+  },
+  11155111: {
+    '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14': { symbol: 'WETH', decimals: 18 },
+    '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238': { symbol: 'USDC', decimals: 6 },
   },
   8453: {
     '0x4200000000000000000000000000000000000006': { symbol: 'WETH', decimals: 18 },
@@ -53,7 +117,54 @@ export const WHITELISTED_ERC20 = {
   },
 }
 
-// OTCZone ABI — only the parts we call from the frontend
+export const USDC_ADDRESSES = {
+  1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+  11155111: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+  8453: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+  137: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+  57073: '0x2D270e6886d130D724215A266106e6832161EAEd',
+}
+
+const ORDER_COMPONENTS_ABI = {
+  name: 'components',
+  type: 'tuple',
+  components: [
+    { name: 'offerer', type: 'address' },
+    { name: 'zone', type: 'address' },
+    {
+      name: 'offer',
+      type: 'tuple[]',
+      components: [
+        { name: 'itemType', type: 'uint8' },
+        { name: 'token', type: 'address' },
+        { name: 'identifierOrCriteria', type: 'uint256' },
+        { name: 'startAmount', type: 'uint256' },
+        { name: 'endAmount', type: 'uint256' },
+      ],
+    },
+    {
+      name: 'consideration',
+      type: 'tuple[]',
+      components: [
+        { name: 'itemType', type: 'uint8' },
+        { name: 'token', type: 'address' },
+        { name: 'identifierOrCriteria', type: 'uint256' },
+        { name: 'startAmount', type: 'uint256' },
+        { name: 'endAmount', type: 'uint256' },
+        { name: 'recipient', type: 'address' },
+      ],
+    },
+    { name: 'orderType', type: 'uint8' },
+    { name: 'startTime', type: 'uint256' },
+    { name: 'endTime', type: 'uint256' },
+    { name: 'zoneHash', type: 'bytes32' },
+    { name: 'salt', type: 'uint256' },
+    { name: 'conduitKey', type: 'bytes32' },
+    { name: 'counter', type: 'uint256' },
+  ],
+}
+
+// OTCRegistry ABI — only the parts we call from the frontend
 export const ZONE_ABI = [
   {
     type: 'function',
@@ -63,32 +174,9 @@ export const ZONE_ABI = [
         name: 'reg',
         type: 'tuple',
         components: [
-          { name: 'orderHash', type: 'bytes32' },
-          { name: 'maker', type: 'address' },
-          { name: 'taker', type: 'address' },
-          {
-            name: 'offer',
-            type: 'tuple[]',
-            components: [
-              { name: 'itemType', type: 'uint8' },
-              { name: 'token', type: 'address' },
-              { name: 'identifier', type: 'uint256' },
-              { name: 'amount', type: 'uint256' },
-            ],
-          },
-          {
-            name: 'consideration',
-            type: 'tuple[]',
-            components: [
-              { name: 'itemType', type: 'uint8' },
-              { name: 'token', type: 'address' },
-              { name: 'identifier', type: 'uint256' },
-              { name: 'amount', type: 'uint256' },
-              { name: 'recipient', type: 'address' },
-            ],
-          },
+          ORDER_COMPONENTS_ABI,
+          { name: 'seaportSignature', type: 'bytes' },
           { name: 'signature', type: 'bytes' },
-          { name: 'orderURI', type: 'string' },
           { name: 'memo', type: 'string' },
         ],
       },
@@ -96,6 +184,21 @@ export const ZONE_ABI = [
     outputs: [],
     stateMutability: 'nonpayable',
   },
+  {
+    type: 'event',
+    name: 'OrderRegistered',
+    inputs: [
+      { name: 'orderHash', type: 'bytes32', indexed: true },
+      { name: 'maker', type: 'address', indexed: true },
+      { name: 'taker', type: 'address', indexed: true },
+      { ...ORDER_COMPONENTS_ABI, indexed: false },
+      { name: 'memo', type: 'string', indexed: false },
+    ],
+    anonymous: false,
+  },
+]
+
+export const LEGACY_OTCZONE_ABI = [
   {
     type: 'event',
     name: 'OrderRegistered',

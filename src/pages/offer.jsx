@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useOutletContext } from 'react-router'
-import { getOrderFromTx, getOrderStatus, fulfillOrder, cancelOrder, ensureApproval, deriveOrderStatus, getFillTxHash } from '../lib/contract'
-import { checkHoldings } from '../lib/balances'
-import { getVerificationStatus } from '../lib/verification'
+import { getOrderFromTx, getOrderStatus, getCounter, fulfillOrder, cancelOrder, ensureApproval, simulateFulfillment, deriveOrderStatus, getFillTxHash, signTipAuthorization } from '../lib/contract'
+import { checkHoldings, checkKnownSeaportBlockedCollections, checkSeaportApprovals } from '../lib/asset-checks'
+import { getExplorerTxUrl, getVerificationStatus } from '../lib/verification'
 import { fetchMetadata } from '../lib/metadata'
 import { resolveENS } from '../lib/ens'
 import { generateTradeImage, preloadAssetImages } from '../lib/share-image'
@@ -10,25 +10,23 @@ import AssetCard from '../components/asset-card'
 import AddressDisplay from '../components/address-display'
 import { truncateAddress } from '../lib/wallet'
 import TxChecklist, { buildSteps } from '../components/tx-checklist'
-import { WHITELISTED_ERC20, CHAINS } from '../lib/constants'
+import { WHITELISTED_ERC20, CHAINS, OCARINA_SUPPORT_ADDRESS, USDC_ADDRESSES } from '../lib/constants'
 import { ItemType } from '@opensea/seaport-js/lib/constants'
-import { formatUnits } from 'ethers'
+import { BrowserProvider, Contract, formatUnits, JsonRpcProvider, parseUnits } from 'ethers'
 import { formatTokenAmount } from '../lib/wallet'
+import { friendlyContractError } from '../lib/errors'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
-
-// Known Seaport/Zone error selectors
-const KNOWN_ERRORS = {
-  '0x82b42900': 'You are not the authorized taker for this offer.',
-  '0x98d4901c': 'This order has been cancelled.',
-}
+const SUPPORT_TIP_DEFAULT_USDC_UNITS = 5_000_000n
+const ERC20_BALANCE_ABI = ['function balanceOf(address account) view returns (uint256)']
+const STUCK_STEP_DELAY_MS = 30000
+const RETRYABLE_ACCEPT_STEPS = new Set(['Sign Support Tip', 'Accept Offer'])
 
 function friendlyFillError(err) {
+  const contractMsg = friendlyContractError(err, { preferSeaport: true })
+  if (contractMsg) return contractMsg
+
   const raw = err.data || err.message || ''
-  // Check for known error selectors
-  for (const [selector, msg] of Object.entries(KNOWN_ERRORS)) {
-    if (raw.includes(selector)) return msg
-  }
   // Seaport reverts with generic data when token transfers fail
   if (raw.includes('execution reverted') || err.code === 'CALL_EXCEPTION') {
     return 'This offer cannot be accepted. The maker may no longer hold the offered assets, or approvals may have been revoked.'
@@ -40,7 +38,155 @@ function friendlyFillError(err) {
   if (nested.includes('insufficient funds') || raw.includes('insufficient funds')) {
     return 'Insufficient funds for gas.'
   }
-  return err.reason || err.shortMessage || 'Transaction failed.'
+  return err.reason || err.shortMessage || err.message || 'Transaction failed.'
+}
+
+function assertNoBlockedCollections(results) {
+  const failed = results.find((result) => result.allowed === false)
+  if (failed) throw new Error(failed.reason || 'A selected collection cannot be traded through Seaport.')
+}
+
+function acceptStuckStepMessage(label) {
+  if (label === 'Accept Offer' || label.startsWith('Approve ')) {
+    return `Still waiting on ${label}. If your wallet prompt is stuck and you have not submitted the transaction, reject or close any pending wallet request, then retry the checklist.`
+  }
+
+  return `Still waiting on ${label}. If your wallet prompt is stuck, reject or close any pending wallet request, then retry the checklist.`
+}
+
+function isCriteriaItem(item) {
+  const itemType = Number(item.itemType)
+  return itemType === ItemType.ERC721_WITH_CRITERIA || itemType === ItemType.ERC1155_WITH_CRITERIA
+}
+
+function exactItemType(item) {
+  const itemType = Number(item.itemType)
+  if (itemType === ItemType.ERC721_WITH_CRITERIA) return ItemType.ERC721
+  if (itemType === ItemType.ERC1155_WITH_CRITERIA) return ItemType.ERC1155
+  return itemType
+}
+
+function resolveCriteriaItems(items, selections = {}) {
+  const missing = new Set()
+  const resolved = items.map((item, index) => {
+    if (!isCriteriaItem(item)) return item
+    const selected = selections[index]
+    if (!selected && selected !== '0') {
+      missing.add(index)
+      return { ...item, itemType: exactItemType(item) }
+    }
+    return {
+      ...item,
+      itemType: exactItemType(item),
+      identifierOrCriteria: selected,
+    }
+  })
+  return { items: resolved, missing }
+}
+
+function applyMissingCriteria(results, missing) {
+  return results.map((result, index) => (
+    missing.has(index) ? { held: false, reason: 'Choose token ID' } : result
+  ))
+}
+
+function hasMissingCriteria(params, selections) {
+  return params.offer.some((item, index) => isCriteriaItem(item) && !selections.offer?.[index] && selections.offer?.[index] !== '0')
+    || params.consideration.some((item, index) => isCriteriaItem(item) && !selections.consideration?.[index] && selections.consideration?.[index] !== '0')
+}
+
+function hasDuplicateERC721CriteriaSelections(params, selections) {
+  return ['offer', 'consideration'].some((side) => {
+    const seen = new Set()
+    return params[side].some((item, index) => {
+      if (Number(item.itemType) !== ItemType.ERC721_WITH_CRITERIA) return false
+      const selected = selections[side]?.[index]
+      if (!selected && selected !== '0') return false
+      const key = `${item.token.toLowerCase()}:${selected}`
+      if (seen.has(key)) return true
+      seen.add(key)
+      return false
+    })
+  })
+}
+
+function whitelistedTokenInfo(chainId, token) {
+  const normalized = token?.toLowerCase()
+  if (!normalized) return null
+  const match = Object.entries(WHITELISTED_ERC20[Number(chainId)] || {})
+    .find(([address]) => address.toLowerCase() === normalized)
+  return match?.[1] || null
+}
+
+function supportTipToken(chainId) {
+  const token = USDC_ADDRESSES[Number(chainId)]
+  if (!token) return null
+  const info = whitelistedTokenInfo(chainId, token)
+  return { address: token, decimals: info?.decimals ?? 6 }
+}
+
+function formatSupportTipUnits(amount, chainId) {
+  const token = supportTipToken(chainId)
+  const formatted = formatUnits(amount > 0n ? amount : 0n, token?.decimals ?? 6)
+  return formatted.includes('.') ? formatted.replace(/\.?0+$/, '') || '0' : formatted
+}
+
+function parseSupportTipAmount(value, chainId) {
+  const token = supportTipToken(chainId)
+  if (!token) return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  try {
+    return parseUnits(trimmed, token.decimals)
+  } catch {
+    return null
+  }
+}
+
+function hasTooManySupportTipDecimals(value, chainId) {
+  const token = supportTipToken(chainId)
+  const trimmed = value.trim()
+  const numericLike = /^\d*(?:\.\d*)?$/.test(trimmed)
+  if (!numericLike || !trimmed.includes('.')) return false
+  const [, fraction = ''] = trimmed.split('.')
+  return fraction.length > (token?.decimals ?? 6)
+}
+
+function supportTipForChain(chainId, amount = SUPPORT_TIP_DEFAULT_USDC_UNITS) {
+  const token = USDC_ADDRESSES[Number(chainId)]
+  if (!token) return null
+  const amountUnits = typeof amount === 'bigint' ? amount : BigInt(amount)
+  if (amountUnits <= 0n) return null
+  return {
+    itemType: ItemType.ERC20,
+    token,
+    identifier: '0',
+    amount: amountUnits.toString(),
+    recipient: OCARINA_SUPPORT_ADDRESS,
+  }
+}
+
+function supportTipAsset(chainId, amount) {
+  const tip = supportTipForChain(chainId, amount)
+  if (!tip) return null
+  return {
+    token: tip.token,
+    tokenId: tip.identifier,
+    amount: tip.amount,
+    startAmount: tip.amount,
+    assetType: 'ERC20',
+    itemType: ItemType.ERC20,
+  }
+}
+
+function requiredSupportTipTokenConsideration(items, chainId) {
+  const token = USDC_ADDRESSES[Number(chainId)]?.toLowerCase()
+  if (!token) return 0n
+  return items.reduce((sum, item) => {
+    if (Number(item.itemType) !== ItemType.ERC20) return sum
+    if (item.token?.toLowerCase() !== token) return sum
+    return sum + BigInt(item.startAmount)
+  }, 0n)
 }
 
 export default function Offer() {
@@ -57,20 +203,73 @@ export default function Offer() {
   const [submitting, setSubmitting] = useState(false)
   const [copied, setCopied] = useState(false)
   const [offerHoldings, setOfferHoldings] = useState(null) // array parallel to offer items
+  const [offerApprovals, setOfferApprovals] = useState(null) // array parallel to offer items
   const [considerationHoldings, setConsiderationHoldings] = useState(null) // array parallel to consideration items
+  const [supportTipBalance, setSupportTipBalance] = useState(null)
+  const [supportTipBalanceStatus, setSupportTipBalanceStatus] = useState('idle')
+  const [supportTipRequiredUSDC, setSupportTipRequiredUSDC] = useState(0n)
+  const [supportTipAmountInput, setSupportTipAmountInput] = useState('0')
   const [showVerifyModal, setShowVerifyModal] = useState(false)
   const [unverifiedAssets, setUnverifiedAssets] = useState([])
   const [fillTxHash, setFillTxHash] = useState(null)
+  const [submittedActionTx, setSubmittedActionTx] = useState(null)
+  const [submittedActionCheck, setSubmittedActionCheck] = useState(null)
+  const [checkingSubmittedAction, setCheckingSubmittedAction] = useState(false)
+  const [stuckActionStep, setStuckActionStep] = useState(null)
   const [fulfiller, setFulfiller] = useState(null)
   const [shareImageBlob, setShareImageBlob] = useState(null)
   const [shareImageUrl, setShareImageUrl] = useState(null)
   const [generatingImage, setGeneratingImage] = useState(false)
+  const [criteriaSelections, setCriteriaSelections] = useState({ offer: {}, consideration: {} })
+  const [supportOcarina, setSupportOcarina] = useState(false)
+  const actionRunIdRef = useRef(0)
+  const actionStuckTimerRef = useRef(null)
+  const submittedActionTxRef = useRef(null)
+
+  function clearActionStuckTimer() {
+    if (actionStuckTimerRef.current) {
+      clearTimeout(actionStuckTimerRef.current)
+      actionStuckTimerRef.current = null
+    }
+  }
+
+  function rememberSubmittedActionTx(tx) {
+    submittedActionTxRef.current = tx
+    setSubmittedActionTx(tx)
+  }
+
+  function scheduleActionStuckPrompt(step, runId) {
+    clearActionStuckTimer()
+    setStuckActionStep(null)
+
+    if (step.status !== 'signing' || (!RETRYABLE_ACCEPT_STEPS.has(step.label) && step.type !== 'approval')) return
+
+    actionStuckTimerRef.current = setTimeout(() => {
+      if (actionRunIdRef.current === runId && !submittedActionTxRef.current) {
+        setStuckActionStep({ label: step.label })
+      }
+    }, STUCK_STEP_DELAY_MS)
+  }
+
+  function retryActionChecklist() {
+    clearActionStuckTimer()
+    setStuckActionStep(null)
+    handleFill()
+  }
+
+  useEffect(() => () => clearActionStuckTimer(), [])
 
   // Fetch order data from tx hash
   useEffect(() => {
     let cancelled = false
     async function load() {
       try {
+        setOrderData(null)
+        setLoadError(null)
+        setStatusLabel(null)
+        setStatusLoading(true)
+        setFillTxHash(null)
+        setFulfiller(null)
         const data = await getOrderFromTx(Number(chainId), txHash)
         if (cancelled) return
         setOrderData(data)
@@ -89,13 +288,23 @@ export default function Offer() {
   // Fetch order status separately so a transient RPC failure doesn't destroy loaded order data
   useEffect(() => {
     if (!orderData) return
+    if (orderData.archived) {
+      setStatusLabel(orderData.status)
+      setStatusLoading(false)
+      if (orderData.resolution?.txHash) setFillTxHash(orderData.resolution.txHash)
+      if (orderData.resolution?.fulfiller) setFulfiller(orderData.resolution.fulfiller)
+      return
+    }
     let cancelled = false
     async function load() {
       try {
-        const status = await getOrderStatus(Number(chainId), orderData.orderHash)
+        const [status, liveCounter] = await Promise.all([
+          getOrderStatus(Number(chainId), orderData.orderHash),
+          getCounter(Number(chainId), orderData.order.parameters.offerer).catch(() => undefined),
+        ])
         if (!cancelled) {
-          const endTime = orderData.order.parameters.endTime
-          setStatusLabel(deriveOrderStatus(status, endTime))
+          const { endTime, counter: orderCounter } = orderData.order.parameters
+          setStatusLabel(deriveOrderStatus(status, endTime, liveCounter, orderCounter))
         }
       } catch (err) {
         console.error('Failed to load order status:', err)
@@ -111,6 +320,7 @@ export default function Offer() {
   // Fetch fill transaction hash + fulfiller address for filled orders
   useEffect(() => {
     if (!orderData || statusLabel !== 'filled') return
+    if (orderData.archived) return
     let cancelled = false
     const offerer = orderData.order.parameters.offerer
     const cid = Number(chainId)
@@ -152,12 +362,14 @@ export default function Offer() {
       const offerItems = await Promise.all(params.offer.map(async (o) => {
         const it = Number(o.itemType)
         let _name = null, _image = null
-        if (it >= 2) {
+        if (it === ItemType.ERC721 || it === ItemType.ERC1155) {
           try {
             const meta = await fetchMetadata(cid, o.token, o.identifierOrCriteria, it === 3 ? 1 : 0)
             _name = meta?.name
             _image = meta?.image
           } catch { /* ignore */ }
+        } else if (isCriteriaItem(o)) {
+          _name = 'Any token'
         }
         return { ...o, itemType: it, _name, _image }
       }))
@@ -165,12 +377,14 @@ export default function Offer() {
       const considerationItems = await Promise.all(params.consideration.map(async (c) => {
         const it = Number(c.itemType)
         let _name = null, _image = null
-        if (it >= 2) {
+        if (it === ItemType.ERC721 || it === ItemType.ERC1155) {
           try {
             const meta = await fetchMetadata(cid, c.token, c.identifierOrCriteria, it === 3 ? 1 : 0)
             _name = meta?.name
             _image = meta?.image
           } catch { /* ignore */ }
+        } else if (isCriteriaItem(c)) {
+          _name = 'Any token'
         }
         return { ...c, itemType: it, _name, _image }
       }))
@@ -220,10 +434,22 @@ export default function Offer() {
     if (!orderData || statusLabel !== 'open') return
     let cancelled = false
     const params = orderData.order.parameters
+    setOfferHoldings(null)
+    setOfferApprovals(null)
+    setConsiderationHoldings(null)
+
+    const { items: resolvedOffer, missing: missingOffer } = resolveCriteriaItems(params.offer, criteriaSelections.offer)
+    const { items: resolvedConsideration, missing: missingConsideration } = resolveCriteriaItems(params.consideration, criteriaSelections.consideration)
 
     // Check maker holds offered assets
-    checkHoldings(Number(chainId), params.offerer, params.offer).then((results) => {
-      if (!cancelled) setOfferHoldings(results)
+    checkHoldings(Number(chainId), params.offerer, resolvedOffer).then((results) => {
+      const withMissing = applyMissingCriteria(results, missingOffer)
+      if (!cancelled) setOfferHoldings(withMissing)
+    })
+
+    // Check maker has approved Seaport to transfer offered assets
+    checkSeaportApprovals(Number(chainId), params.offerer, params.offer).then((results) => {
+      if (!cancelled) setOfferApprovals(results)
     })
 
     // Check taker holds consideration assets (only if wallet is the valid taker)
@@ -233,23 +459,95 @@ export default function Offer() {
       wallet.address.toLowerCase() === takerAddr.toLowerCase()
     )
     if (isValidTaker) {
-      checkHoldings(Number(chainId), wallet.address, params.consideration).then((results) => {
-        if (!cancelled) setConsiderationHoldings(results)
+      checkHoldings(Number(chainId), wallet.address, resolvedConsideration).then((results) => {
+        const withMissing = applyMissingCriteria(results, missingConsideration)
+        if (!cancelled) setConsiderationHoldings(withMissing)
       })
     } else {
       setConsiderationHoldings(null)
     }
 
     return () => { cancelled = true }
-  }, [orderData, statusLabel, chainId, wallet])
+  }, [orderData, statusLabel, chainId, wallet, criteriaSelections])
 
-  const checkVerificationAndFill = useCallback(async () => {
+  // Preload the taker's USDC headroom for optional support tips.
+  useEffect(() => {
+    if (!orderData || statusLabel !== 'open') {
+      setSupportTipBalance(null)
+      setSupportTipBalanceStatus('idle')
+      setSupportTipRequiredUSDC(0n)
+      setSupportTipAmountInput('0')
+      return
+    }
+
+    const params = orderData.order.parameters
+    const takerAddr = orderData.taker
+    const isValidTaker = wallet && (
+      takerAddr === ZERO_ADDRESS ||
+      wallet.address.toLowerCase() === takerAddr.toLowerCase()
+    )
+    const tipToken = supportTipToken(chainId)
+
+    if (!isValidTaker || !tipToken) {
+      setSupportTipBalance(null)
+      setSupportTipBalanceStatus('idle')
+      setSupportTipRequiredUSDC(0n)
+      setSupportTipAmountInput('0')
+      return
+    }
+
+    let cancelled = false
+    const requiredUSDC = requiredSupportTipTokenConsideration(params.consideration, chainId)
+    setSupportTipBalance(null)
+    setSupportTipRequiredUSDC(requiredUSDC)
+    setSupportTipBalanceStatus('checking')
+
+    ;(async () => {
+      try {
+        const chain = CHAINS[Number(chainId)]
+        if (!chain) throw new Error('Unsupported chain')
+        const provider = new JsonRpcProvider(chain.rpcUrl)
+        const contract = new Contract(tipToken.address, ERC20_BALANCE_ABI, provider)
+        const balance = await contract.balanceOf(wallet.address)
+        if (cancelled) return
+        const available = balance > requiredUSDC ? balance - requiredUSDC : 0n
+        const prefill = available < SUPPORT_TIP_DEFAULT_USDC_UNITS ? 0n : SUPPORT_TIP_DEFAULT_USDC_UNITS
+        setSupportTipBalance(balance)
+        setSupportTipAmountInput(formatSupportTipUnits(prefill, chainId))
+        if (prefill === 0n) setSupportOcarina(false)
+        setSupportTipBalanceStatus('ready')
+      } catch (err) {
+        console.error('Failed to load support tip balance:', err)
+        if (!cancelled) setSupportTipBalanceStatus('error')
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [orderData, statusLabel, chainId, wallet?.address])
+
+  useEffect(() => {
+    if (!supportOcarina || !orderData || supportTipBalanceStatus !== 'ready' || supportTipBalance === null) return
+
+    const amount = parseSupportTipAmount(supportTipAmountInput, chainId)
+    const max = supportTipBalance > supportTipRequiredUSDC ? supportTipBalance - supportTipRequiredUSDC : 0n
+
+    if (max <= 0n) {
+      setSupportTipAmountInput('0')
+      setSupportOcarina(false)
+      return
+    }
+    if (amount !== null && amount > max) {
+      setSupportTipAmountInput(formatSupportTipUnits(max, chainId))
+    }
+  }, [supportOcarina, supportTipAmountInput, supportTipBalance, supportTipRequiredUSDC, supportTipBalanceStatus, chainId, orderData])
+
+  async function checkVerificationAndFill() {
     if (!orderData) return
     const params = orderData.order.parameters
     // Only check NFTs the taker is receiving (maker's offer items), not what they're giving
     const nftItems = params.offer.filter((item) => {
       const it = Number(item.itemType)
-      return it === 2 || it === 3
+      return it === 2 || it === 3 || it === 4 || it === 5
     })
 
     const unverified = []
@@ -258,17 +556,21 @@ export default function Offer() {
       if (v.status !== 'verified') {
         let name = null
         try {
-          const meta = await fetchMetadata(Number(chainId), item.token, item.identifierOrCriteria, Number(item.itemType) === 3 ? 1 : 0)
+          const tokenId = isCriteriaItem(item) ? criteriaSelections.offer?.[params.offer.indexOf(item)] : item.identifierOrCriteria
+          const meta = tokenId
+            ? await fetchMetadata(Number(chainId), item.token, tokenId, Number(item.itemType) === 3 || Number(item.itemType) === 5 ? 1 : 0)
+            : null
           name = meta?.name
         } catch { /* ignore */ }
         const openseaChain = { 1: 'ethereum', 8453: 'base', 137: 'matic', 57073: 'ink' }[Number(chainId)] || 'ethereum'
+        const tokenId = isCriteriaItem(item) ? criteriaSelections.offer?.[params.offer.indexOf(item)] : item.identifierOrCriteria
         unverified.push({
           token: item.token,
-          tokenId: item.identifierOrCriteria,
-          name: name || `#${item.identifierOrCriteria}`,
+          tokenId,
+          name: name || (tokenId ? `#${tokenId}` : 'Any token from collection'),
           status: v.status,
           message: v.message,
-          openseaUrl: `https://opensea.io/assets/${openseaChain}/${item.token}/${item.identifierOrCriteria}`,
+          openseaUrl: tokenId ? `https://opensea.io/assets/${openseaChain}/${item.token}/${tokenId}` : `https://opensea.io/assets/${openseaChain}/${item.token}`,
         })
       }
     }
@@ -279,14 +581,44 @@ export default function Offer() {
     } else {
       handleFill()
     }
-  }, [orderData, chainId])
+  }
 
   const handleFill = useCallback(async () => {
     if (!wallet || !orderData) return
+    const runId = actionRunIdRef.current + 1
+    actionRunIdRef.current = runId
+    clearActionStuckTimer()
     setError(null)
+    setSubmittedActionCheck(null)
+    setStuckActionStep(null)
+    rememberSubmittedActionTx(null)
     setSubmitting(true)
 
     const params = orderData.order.parameters
+    let includeSupportTip = supportOcarina
+    let parsedSupportTipAmount = includeSupportTip ? parseSupportTipAmount(supportTipAmountInput, chainId) : null
+    const supportTipMax = supportTipBalance === null ? null : (
+      supportTipBalance > supportTipRequiredUSDC ? supportTipBalance - supportTipRequiredUSDC : 0n
+    )
+
+    if (includeSupportTip) {
+      if (parsedSupportTipAmount === null || parsedSupportTipAmount <= 0n) {
+        setSupportOcarina(false)
+        includeSupportTip = false
+        parsedSupportTipAmount = null
+      } else if (supportTipMax !== null && parsedSupportTipAmount > supportTipMax) {
+        setSupportTipAmountInput(formatSupportTipUnits(supportTipMax, chainId))
+        if (supportTipMax <= 0n) {
+          setSupportOcarina(false)
+          includeSupportTip = false
+          parsedSupportTipAmount = null
+        } else {
+          parsedSupportTipAmount = supportTipMax
+        }
+      }
+    }
+
+    const supportTip = includeSupportTip ? supportTipForChain(chainId, parsedSupportTipAmount) : null
     // Build taker assets from consideration items
     const takerAssets = params.consideration.map((c) => {
       const it = Number(c.itemType)
@@ -300,16 +632,39 @@ export default function Offer() {
         itemType: it,
       }
     })
+    if (supportTip) takerAssets.push(supportTipAsset(chainId, supportTip.amount))
 
-    const txSteps = buildSteps(takerAssets, 'Accept Offer')
+    const txSteps = [
+      { label: 'Check Trade Assets', status: 'pending', type: 'action' },
+      ...buildSteps(takerAssets, 'Check Fillability', supportTip ? 'Sign Support Tip' : null, 'Accept Offer'),
+    ]
     setSteps(txSteps)
 
     function updateStep(index, update) {
+      if (actionRunIdRef.current !== runId) return
       txSteps[index] = { ...txSteps[index], ...update }
       setSteps([...txSteps])
+      scheduleActionStuckPrompt(txSteps[index], runId)
     }
 
+    function assertActive() {
+      if (actionRunIdRef.current !== runId) {
+        throw new Error('Checklist run was superseded.')
+      }
+    }
+
+    let pendingTx = null
+
     try {
+      const assetCheckIndex = txSteps.findIndex((s) => s.label === 'Check Trade Assets')
+      updateStep(assetCheckIndex, { status: 'checking' })
+      assertNoBlockedCollections(checkKnownSeaportBlockedCollections(Number(chainId), [
+        ...params.offer,
+        ...params.consideration,
+      ]))
+      assertActive()
+      updateStep(assetCheckIndex, { status: 'done' })
+
       const approvalSteps = txSteps.filter((s) => s.type === 'approval')
       for (let i = 0; i < approvalSteps.length; i++) {
         const step = approvalSteps[i]
@@ -323,34 +678,124 @@ export default function Offer() {
           ? matchingAssets.reduce((sum, a) => sum + BigInt(a.amount), 0n).toString()
           : undefined
         const tx = await ensureApproval(wallet.provider, step.tokenAddress, wallet.address, asset?.itemType ?? ItemType.ERC721, totalAmount)
+        assertActive()
         if (tx) {
+          pendingTx = { kind: 'approval', label: step.label, hash: tx.hash }
+          rememberSubmittedActionTx(pendingTx)
           updateStep(stepIndex, { status: 'confirming' })
           await tx.wait()
+          assertActive()
+          pendingTx = null
+          rememberSubmittedActionTx(null)
         }
         updateStep(stepIndex, { status: 'done' })
       }
 
-      const actionIndex = txSteps.length - 1
+      const tips = supportTip ? [supportTip] : []
+      const simulationIndex = txSteps.findIndex((s) => s.label === 'Check Fillability')
+      updateStep(simulationIndex, { status: 'checking' })
+      await simulateFulfillment(
+        wallet.provider,
+        Number(chainId),
+        orderData.orderHash,
+        orderData.order,
+        criteriaSelections,
+        [],
+        '0x'
+      )
+      assertActive()
+      updateStep(simulationIndex, { status: 'done' })
+
+      let tipAuthorization = '0x'
+      if (supportTip) {
+        const tipIndex = txSteps.findIndex((s) => s.label === 'Sign Support Tip')
+        updateStep(tipIndex, { status: 'signing' })
+        tipAuthorization = await signTipAuthorization(
+          wallet.provider,
+          Number(chainId),
+          orderData.zoneAddress,
+          orderData.orderHash,
+          tips
+        )
+        assertActive()
+        updateStep(tipIndex, { status: 'done' })
+      }
+
+      const actionIndex = txSteps.findIndex((s) => s.label === 'Accept Offer')
       updateStep(actionIndex, { status: 'signing' })
-      const { wait } = await fulfillOrder(wallet.provider, orderData.order)
+      const { tx, wait } = await fulfillOrder(
+        wallet.provider,
+        Number(chainId),
+        orderData.orderHash,
+        orderData.order,
+        criteriaSelections,
+        tips,
+        tipAuthorization
+      )
+      assertActive()
+      pendingTx = { kind: 'fill', label: 'Accept Offer', hash: tx.hash }
+      rememberSubmittedActionTx(pendingTx)
+      setFillTxHash(tx.hash)
       updateStep(actionIndex, { status: 'confirming' })
       const receipt = await wait()
+      assertActive()
       updateStep(actionIndex, { status: 'done' })
 
-      setFillTxHash(receipt.hash)
+      rememberSubmittedActionTx(null)
+      setFillTxHash(receipt.hash || tx.hash)
       setStatusLabel('filled')
     } catch (err) {
+      if (actionRunIdRef.current !== runId) return
       console.error(err)
+      clearActionStuckTimer()
+      setStuckActionStep(null)
+      if (pendingTx) rememberSubmittedActionTx(pendingTx)
       const msg = friendlyFillError(err)
-      const failedIndex = txSteps.findIndex((s) => s.status === 'signing' || s.status === 'confirming')
+      const failedIndex = txSteps.findIndex((s) => s.status === 'checking' || s.status === 'signing' || s.status === 'confirming')
       if (failedIndex !== -1) {
         updateStep(failedIndex, { status: 'failed', error: msg })
       }
       setError(msg)
     } finally {
-      setSubmitting(false)
+      if (actionRunIdRef.current === runId) setSubmitting(false)
     }
-  }, [wallet, orderData])
+  }, [wallet, orderData, criteriaSelections, chainId, supportOcarina, supportTipAmountInput, supportTipBalance, supportTipRequiredUSDC, supportTipBalanceStatus])
+
+  async function checkSubmittedActionTransaction() {
+    if (!wallet || !submittedActionTx || checkingSubmittedAction) return
+
+    setCheckingSubmittedAction(true)
+    setSubmittedActionCheck(null)
+
+    try {
+      const provider = new BrowserProvider(wallet.provider)
+      const receipt = await provider.getTransactionReceipt(submittedActionTx.hash)
+      if (!receipt) {
+        setSubmittedActionCheck(`${submittedActionTx.label} transaction is not confirmed yet.`)
+        return
+      }
+      if (receipt.status === 0) {
+        setSubmittedActionCheck(`${submittedActionTx.label} transaction reverted.`)
+        return
+      }
+
+      if (submittedActionTx.kind === 'fill') {
+        rememberSubmittedActionTx(null)
+        setFillTxHash(submittedActionTx.hash)
+        setStatusLabel('filled')
+        setSubmitting(false)
+        return
+      }
+
+      setSubmittedActionCheck(`${submittedActionTx.label} confirmed. Restarting the checklist...`)
+      rememberSubmittedActionTx(null)
+      handleFill()
+    } catch (err) {
+      setSubmittedActionCheck(`${submittedActionTx.label} is not confirmed yet. ${friendlyFillError(err)}`)
+    } finally {
+      setCheckingSubmittedAction(false)
+    }
+  }
 
   const handleCancel = useCallback(async () => {
     if (!wallet || !orderData) return
@@ -414,6 +859,23 @@ export default function Offer() {
   const isRestricted = taker !== ZERO_ADDRESS
   const wrongTaker = wallet && isRestricted && !isTaker
   const wrongChain = wallet && wallet.chainId !== Number(chainId)
+  const makerMissing = offerHoldings && offerHoldings.some((h) => !h.held)
+  const makerApprovalMissing = offerApprovals && offerApprovals.some((a) => !a.approved)
+  const takerMissing = considerationHoldings && considerationHoldings.some((h) => !h.held)
+  const supportTipAvailable = Boolean(supportTipToken(chainId))
+  const supportTipAmount = supportTipAvailable ? parseSupportTipAmount(supportTipAmountInput, chainId) : null
+  const supportTipMax = supportTipBalance === null ? null : (
+    supportTipBalance > supportTipRequiredUSDC ? supportTipBalance - supportTipRequiredUSDC : 0n
+  )
+  const supportTipMaxLabel = supportTipMax !== null ? formatSupportTipUnits(supportTipMax, chainId) : null
+  const supportTipChecking = supportOcarina && supportTipAvailable && supportTipBalanceStatus !== 'ready' && supportTipBalanceStatus !== 'error'
+  const supportTipMissing = supportOcarina && supportTipAmount !== null && supportTipAmount > 0n && supportTipMax !== null && supportTipAmount > supportTipMax
+  const supportTipUnavailable = supportTipBalanceStatus === 'ready' && supportTipMax === 0n
+  const supportTipCheckboxDisabled = submitting || supportTipBalanceStatus === 'checking' || supportTipUnavailable
+  const fillabilityChecking = isOpen && (!offerHoldings || !offerApprovals)
+  const fillabilityBlocked = makerMissing || makerApprovalMissing
+  const missingCriteria = hasMissingCriteria(params, criteriaSelections)
+  const duplicateERC721Criteria = hasDuplicateERC721CriteriaSelections(params, criteriaSelections)
 
   // Parse offer/consideration for display (format fungible amounts to human-readable)
   function formatAmount(item) {
@@ -431,13 +893,55 @@ export default function Offer() {
     tokenId: o.identifierOrCriteria,
     amount: formatAmount(o),
     itemType: Number(o.itemType),
+    criteriaSelection: criteriaSelections.offer?.[params.offer.indexOf(o)],
   }))
   const considerationAssets = params.consideration.map((c) => ({
     token: c.token,
     tokenId: c.identifierOrCriteria,
     amount: formatAmount(c),
     itemType: Number(c.itemType),
+    criteriaSelection: criteriaSelections.consideration?.[params.consideration.indexOf(c)],
   }))
+
+  function setCriteriaSelection(side, index, value) {
+    setCriteriaSelections((prev) => ({
+      ...prev,
+      [side]: { ...prev[side], [index]: value.trim() },
+    }))
+  }
+
+  function handleSupportTipToggle(e) {
+    const checked = e.target.checked
+    if (!checked) {
+      setSupportOcarina(false)
+      return
+    }
+    if (supportTipBalanceStatus === 'ready' && supportTipMax !== null && supportTipMax <= 0n) {
+      setSupportOcarina(false)
+      return
+    }
+    if (supportTipAmount === null || supportTipAmount <= 0n) {
+      const amount = supportTipMax !== null && supportTipMax < SUPPORT_TIP_DEFAULT_USDC_UNITS
+        ? supportTipMax
+        : SUPPORT_TIP_DEFAULT_USDC_UNITS
+      setSupportTipAmountInput(formatSupportTipUnits(amount, chainId))
+    }
+    setSupportOcarina(true)
+  }
+
+  function handleSupportTipAmountChange(e) {
+    const value = e.target.value
+    if (hasTooManySupportTipDecimals(value, chainId)) return
+    const amount = parseSupportTipAmount(value, chainId)
+    if (amount !== null && supportTipMax !== null && amount > supportTipMax) {
+      setSupportTipAmountInput(formatSupportTipUnits(supportTipMax, chainId))
+      return
+    }
+    setSupportTipAmountInput(value)
+    if (supportOcarina && (value.trim() === '' || amount === null || amount <= 0n)) {
+      setSupportOcarina(false)
+    }
+  }
 
   return (
     <div className="page offer-detail">
@@ -462,7 +966,16 @@ export default function Offer() {
             From <AddressDisplay address={maker} chainId={Number(chainId)} />
             {isMaker && <span className="you-badge">you</span>}
           </h3>
-          <AssetList assets={offerAssets} chainId={chainId} holdings={offerHoldings} holdingsLabel="Maker" />
+          <AssetList
+            assets={offerAssets}
+            chainId={chainId}
+            holdings={offerHoldings}
+            approvals={offerApprovals}
+            holdingsLabel="Maker"
+            criteriaSide="offer"
+            criteriaSelections={criteriaSelections.offer}
+            onCriteriaChange={setCriteriaSelection}
+          />
         </div>
         <div className="offer-party">
           <h3 className="party-address">
@@ -475,9 +988,28 @@ export default function Offer() {
               </>
             )}
           </h3>
-          <AssetList assets={considerationAssets} chainId={chainId} holdings={isMaker ? null : considerationHoldings} holdingsLabel="You" />
+          <AssetList
+            assets={considerationAssets}
+            chainId={chainId}
+            holdings={isMaker ? null : considerationHoldings}
+            holdingsLabel="You"
+            criteriaSide="consideration"
+            criteriaSelections={criteriaSelections.consideration}
+            onCriteriaChange={setCriteriaSelection}
+          />
         </div>
       </div>
+
+      {isOpen && !fillabilityChecking && fillabilityBlocked && (
+        <div className="fillability-panel fillability-panel-blocked">
+          {makerMissing && (
+            <p>The maker no longer holds all offered assets.</p>
+          )}
+          {makerApprovalMissing && (
+            <p>The maker has not approved Seaport to transfer all offered assets.</p>
+          )}
+        </div>
+      )}
 
       <div className="offer-meta">
         {statusLabel === 'open' && params.endTime && Number(params.endTime) > 0 && (() => {
@@ -495,13 +1027,13 @@ export default function Offer() {
             </p>
           )
         })()}
-        {fillTxHash && (() => {
-          const explorers = { 1: 'https://etherscan.io', 8453: 'https://basescan.org', 137: 'https://polygonscan.com', 57073: 'https://explorer.inkonchain.com' }
-          const base = explorers[Number(chainId)] || explorers[1]
-          const url = `${base}/tx/${fillTxHash}`
+        {(orderData.resolution?.txHash || fillTxHash) && (() => {
+          const hash = orderData.resolution?.txHash || fillTxHash
+          const label = orderData.resolution?.type === 'cancel' ? 'Cancel tx' : 'Fill tx'
+          const url = getExplorerTxUrl(chainId, hash)
           return (
             <p>
-              <span className="meta-label">Fill tx:</span>{' '}
+              <span className="meta-label">{label}:</span>{' '}
               <a href={url} target="_blank" rel="noopener noreferrer">{url}</a>
             </p>
           )
@@ -564,9 +1096,6 @@ export default function Offer() {
         </div>
       )}
 
-      {error && <p className="form-error">{error}</p>}
-      <TxChecklist steps={steps} />
-
       {!wallet && isOpen && (
         <p className="text-muted">Connect your wallet to accept or cancel this offer.</p>
       )}
@@ -606,28 +1135,112 @@ export default function Offer() {
       )}
 
       {wallet && !wrongChain && isOpen && !isExpired && isTaker && !isMaker && (() => {
-        const makerMissing = offerHoldings && offerHoldings.some((h) => !h.held)
-        const takerMissing = considerationHoldings && considerationHoldings.some((h) => !h.held)
-        const blocked = makerMissing || takerMissing
+        const blocked = fillabilityChecking || fillabilityBlocked || takerMissing || supportTipChecking || supportTipMissing || missingCriteria || duplicateERC721Criteria
         return (
           <>
             {makerMissing && (
               <p className="form-error">This offer cannot be accepted — the maker no longer holds all offered assets.</p>
             )}
+            {makerApprovalMissing && (
+              <p className="form-error">This offer cannot be accepted — the maker has not approved Seaport to transfer all offered assets.</p>
+            )}
             {takerMissing && (
               <p className="form-error">You do not hold all required assets to accept this offer.</p>
             )}
-            <button className="btn btn-primary" onClick={checkVerificationAndFill} disabled={submitting || blocked}>
-              {submitting ? 'Accepting...' : 'Accept Offer'}
-            </button>
+            {missingCriteria && (
+              <p className="form-error">Choose a token ID for each Any Token item before accepting this offer.</p>
+            )}
+            {duplicateERC721Criteria && (
+              <p className="form-error">Each ERC-721 Any Token item must use a different token ID.</p>
+            )}
+            <div className="offer-actions">
+              {supportTipAvailable && (
+                <>
+                  <div className="support-tip-control">
+                    <label className="support-tip-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={supportOcarina}
+                        onChange={handleSupportTipToggle}
+                        disabled={supportTipCheckboxDisabled}
+                      />
+                      <span>Support Ocarina</span>
+                    </label>
+                    <div className="support-tip-amount">
+                      <input
+                        className="support-tip-input"
+                        type="text"
+                        inputMode="decimal"
+                        value={supportTipAmountInput}
+                        onChange={handleSupportTipAmountChange}
+                        disabled={submitting || supportTipBalanceStatus === 'checking' || supportTipUnavailable}
+                        aria-label="Support tip amount"
+                      />
+                      <span>USDC</span>
+                    </div>
+                  </div>
+                  {supportTipBalanceStatus === 'checking' && (
+                    <p className="support-tip-hint">Checking available USDC...</p>
+                  )}
+                  {supportTipBalanceStatus === 'ready' && supportTipMaxLabel !== null && (
+                    <p className="support-tip-hint">Available for tip: {supportTipMaxLabel} USDC</p>
+                  )}
+                  {supportTipBalanceStatus === 'error' && (
+                    <p className="support-tip-hint">Balance unavailable; enter tip manually.</p>
+                  )}
+                </>
+              )}
+              <button className="btn btn-primary" onClick={checkVerificationAndFill} disabled={submitting || blocked || Boolean(submittedActionTx)}>
+                {submitting ? 'Accepting...' : 'Accept Offer'}
+              </button>
+              <TxChecklist steps={steps} />
+              {stuckActionStep && !submittedActionTx && !error && (
+                <div className="execute-stuck">
+                  <p className="form-status">
+                    {acceptStuckStepMessage(stuckActionStep.label)}
+                  </p>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={retryActionChecklist}>
+                    Retry checklist
+                  </button>
+                </div>
+              )}
+              {submittedActionTx && (
+                <div className="submitted-transaction">
+                  <p className="form-status">
+                    {submitting
+                      ? `${submittedActionTx.label} transaction submitted. Waiting for confirmation...`
+                      : `${submittedActionTx.label} transaction was submitted. Check whether it confirmed before retrying this offer.`}
+                  </p>
+                  <div className="submitted-registration-actions">
+                    <a href={getExplorerTxUrl(chainId, submittedActionTx.hash)} target="_blank" rel="noreferrer">
+                      View transaction
+                    </a>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={checkSubmittedActionTransaction}
+                      disabled={checkingSubmittedAction}
+                    >
+                      {checkingSubmittedAction ? 'Checking...' : 'Check transaction'}
+                    </button>
+                  </div>
+                  {submittedActionCheck && <p className="form-error">{submittedActionCheck}</p>}
+                </div>
+              )}
+              {error && <p className="form-error">{error}</p>}
+            </div>
           </>
         )
       })()}
 
       {wallet && !wrongChain && isOpen && isMaker && (
-        <button className="btn btn-cancel" onClick={handleCancel} disabled={submitting}>
-          {submitting ? 'Cancelling...' : 'Cancel Offer'}
-        </button>
+        <div className="offer-actions">
+          <button className="btn btn-cancel" onClick={handleCancel} disabled={submitting}>
+            {submitting ? 'Cancelling...' : 'Cancel Offer'}
+          </button>
+          <TxChecklist steps={steps} />
+          {error && <p className="form-error">{error}</p>}
+        </div>
       )}
 
       {showVerifyModal && (
@@ -661,14 +1274,28 @@ export default function Offer() {
   )
 }
 
-function AssetList({ assets, chainId, holdings, holdingsLabel }) {
+function AssetList({ assets, chainId, holdings, approvals, holdingsLabel, criteriaSide, criteriaSelections, onCriteriaChange }) {
   return (
     <div className="asset-list">
       {assets.map((asset, i) => (
         <div key={i}>
           <AssetCard asset={asset} chainId={Number(chainId)} compact={false} />
+          {isCriteriaItem(asset) && (
+            <label className="criteria-resolver">
+              <span>{criteriaSide === 'offer' ? 'Token ID to receive' : 'Token ID to send'}</span>
+              <input
+                type="text"
+                value={criteriaSelections?.[i] || ''}
+                onChange={(e) => onCriteriaChange?.(criteriaSide, i, e.target.value)}
+                placeholder="Token ID"
+              />
+            </label>
+          )}
           {holdings && !holdings[i]?.held && (
-            <p className="asset-missing">{holdingsLabel} {holdingsLabel === 'You' ? 'do' : 'does'} not hold this asset</p>
+            <p className="asset-missing">{holdings[i]?.reason === 'Choose token ID' ? 'Choose a token ID for this item' : `${holdingsLabel} ${holdingsLabel === 'You' ? 'do' : 'does'} not hold this asset`}</p>
+          )}
+          {approvals && !approvals[i]?.approved && (
+            <p className="asset-missing">{holdingsLabel} has not approved Seaport for this asset</p>
           )}
         </div>
       ))}

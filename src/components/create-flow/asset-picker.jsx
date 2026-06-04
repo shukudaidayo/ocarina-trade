@@ -5,6 +5,7 @@ import { WHITELISTED_ERC20, CHAINS } from '../../lib/constants'
 import verifiedTokens from '../../data/verified-tokens.json'
 import mergedCollections from '../../data/merged-collections.json'
 import { Contract, JsonRpcProvider, formatUnits } from 'ethers'
+import { ItemType } from '@opensea/seaport-js/lib/constants'
 
 const ERC20_ABI = ['function balanceOf(address account) view returns (uint256)']
 const ERC165_ABI = ['function supportsInterface(bytes4 interfaceId) view returns (bool)']
@@ -251,11 +252,13 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
   const [manualTypeLoading, setManualTypeLoading] = useState(false)
   const [manualTypeError, setManualTypeError] = useState(null)
   const [manualAmount, setManualAmount] = useState('1')
+  const [manualAny, setManualAny] = useState(false)
   const [quantityNft, setQuantityNft] = useState(null)
   const [quantity, setQuantity] = useState('1')
 
   // Auto-detect token type when manual address changes
   useEffect(() => {
+    let cancelled = false
     setManualType(null)
     setManualTypeError(null)
     if (!manualAddress.match(/^0x[0-9a-fA-F]{40}$/)) return
@@ -264,18 +267,36 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
     setManualTypeLoading(true)
     const provider = new JsonRpcProvider(chain.rpcUrl)
     const contract = new Contract(manualAddress, ERC165_ABI, provider)
-    Promise.all([
-      contract.supportsInterface('0xd9b67a26'), // ERC-1155
-      contract.supportsInterface('0x80ac58cd'), // ERC-721
-    ]).then(([is1155, is721]) => {
-      if (is1155) setManualType('ERC1155')
-      else if (is721) setManualType('ERC721')
-      else setManualTypeError('Unrecognized contract')
+    provider.getCode(manualAddress).then((code) => {
+      if (cancelled) return
+      if (code === '0x') {
+        setManualTypeError(`No contract found on ${chain.name}`)
+        setManualTypeLoading(false)
+        return null
+      }
+      return Promise.all([
+        contract.supportsInterface('0xd9b67a26'), // ERC-1155
+        contract.supportsInterface('0x80ac58cd'), // ERC-721
+      ])
+    }).then((result) => {
+      if (cancelled || !result) return
+      const [is1155, is721] = result
+      if (is1155) {
+        setManualType('ERC1155')
+      } else if (is721) {
+        setManualType('ERC721')
+      } else {
+        setManualTypeError('Contract is not ERC-721 or ERC-1155')
+      }
       setManualTypeLoading(false)
     }).catch(() => {
-      setManualTypeError('Unrecognized contract')
+      if (cancelled) return
+      setManualTypeError(`Could not check contract on ${chain.name}`)
       setManualTypeLoading(false)
     })
+    return () => {
+      cancelled = true
+    }
   }, [manualAddress, chainId])
 
   const [openCollection, setOpenCollection] = useState(null)
@@ -503,7 +524,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
 
   const isSelected = useCallback((contract, tokenId) => {
     return selected.some((a) =>
-      a.token?.toLowerCase() === contract.toLowerCase() && String(a.tokenId) === String(tokenId)
+      !a.criteria && a.token?.toLowerCase() === contract.toLowerCase() && String(a.tokenId) === String(tokenId)
     )
   }, [selected])
 
@@ -547,6 +568,23 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
     }])
   }, [selected, onChange, isSelected, resolveCollectionName])
 
+  const toggleAnyCollection = useCallback((contract, col = {}) => {
+    const tokenType = col.tokenType === 'ERC1155' ? 'ERC1155' : 'ERC721'
+    const name = resolveCollectionName(contract, col.name) || contract
+    onChange([...selected, {
+      token: contract,
+      tokenId: '0',
+      amount: tokenType === 'ERC1155' ? '1' : '1',
+      assetType: tokenType,
+      itemType: tokenType === 'ERC1155' ? ItemType.ERC1155_WITH_CRITERIA : ItemType.ERC721_WITH_CRITERIA,
+      criteria: true,
+      criteriaLabel: 'Any',
+      _name: `Any ${name}`,
+      _collection: name,
+      _image: col.thumbnail || null,
+    }])
+  }, [selected, onChange, resolveCollectionName])
+
   const confirmQuantity = useCallback(() => {
     if (!quantityNft) return
     const qty = parseInt(quantity, 10)
@@ -564,14 +602,19 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
   }, [quantityNft, quantity, selected, onChange, resolveCollectionName])
 
   const addManual = useCallback(async () => {
-    if (!manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualTokenId && manualTokenId !== '0') || !manualType) return
+    if (!manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualAny && !manualTokenId && manualTokenId !== '0') || !manualType) return
     const asset = {
       token: manualAddress,
-      tokenId: manualTokenId,
+      tokenId: manualAny ? '0' : manualTokenId,
       amount: manualType === 'ERC1155' ? manualAmount || '1' : '1',
       assetType: manualType,
     }
-    try {
+    if (manualAny) {
+      asset.criteria = true
+      asset.criteriaLabel = 'Any'
+      asset.itemType = manualType === 'ERC1155' ? ItemType.ERC1155_WITH_CRITERIA : ItemType.ERC721_WITH_CRITERIA
+      asset._name = `Any ${manualAddress.slice(0, 6)}...${manualAddress.slice(-4)}`
+    } else try {
       const meta = await fetchMetadata(chainId, manualAddress, manualTokenId, manualType === 'ERC1155' ? 1 : 0)
       if (meta) {
         asset._name = meta.name
@@ -582,8 +625,9 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
     setManualAddress('')
     setManualTokenId('')
     setManualAmount('1')
+    setManualAny(false)
     setShowManual(false)
-  }, [manualAddress, manualTokenId, manualType, manualAmount, chainId, selected, onChange])
+  }, [manualAddress, manualTokenId, manualType, manualAmount, manualAny, chainId, selected, onChange])
 
   // Filter collections
   const filterLower = filter.toLowerCase()
@@ -626,6 +670,8 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
   const drillCollection = drillCollectionMeta
     ? { ...drillCollectionMeta, nfts: fullCollectionNfts || [] }
     : null
+  const drillContracts = drillAddr ? getDrillContracts(drillAddr) : []
+  const canAddAnyFromDrill = drillContracts.length === 1
 
   return (
     <div className="collectibles-tab">
@@ -667,7 +713,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
       )}
 
       {!isOwnWallet && (
-        <p className="text-muted">Add collectibles by contract address and token ID.</p>
+        <p className="text-muted">Add collectibles by contract address and token ID, or choose any token from a contract.</p>
       )}
 
       {/* Drill-down: show individual tokens from a collection */}
@@ -683,6 +729,15 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
             </button>
           )}
           <h4 className="collection-drill-title">{drillCollection.name}</h4>
+          {canAddAnyFromDrill && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm collection-any-btn"
+              onClick={() => toggleAnyCollection(drillAddr, drillCollection)}
+            >
+              Add Any Token
+            </button>
+          )}
           {loadingCollection && <div className="spinner-center"><span className="spinner" /></div>}
           <div className="nft-grid">
             {drillCollection.nfts.map((nft) => {
@@ -861,7 +916,16 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
               placeholder="Token ID"
               value={manualTokenId}
               onChange={(e) => setManualTokenId(e.target.value)}
+              disabled={manualAny}
             />
+            <label className="manual-any-toggle">
+              <input
+                type="checkbox"
+                checked={manualAny}
+                onChange={(e) => setManualAny(e.target.checked)}
+              />
+              Any token from this contract
+            </label>
             <div className="manual-entry-row">
               {manualType === 'ERC1155' && (
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
@@ -879,7 +943,7 @@ function CollectiblesTab({ address, chainId, selected, onChange, isOwnWallet, ba
                 type="button"
                 className="btn btn-sm"
                 onClick={addManual}
-                disabled={!manualType || !manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualTokenId && manualTokenId !== '0')}
+                disabled={!manualType || !manualAddress.match(/^0x[0-9a-fA-F]{40}$/) || (!manualAny && !manualTokenId && manualTokenId !== '0')}
               >
                 Add
               </button>

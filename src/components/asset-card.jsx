@@ -18,6 +18,8 @@ function resolveItemType(asset) {
   if (asset.itemType !== undefined) return Number(asset.itemType)
   if (asset.assetType === 'NATIVE') return 0
   if (asset.assetType === 'ERC20') return 1
+  if (asset.criteria && asset.assetType === 'ERC1155') return 5
+  if (asset.criteria) return 4
   if (asset.assetType === 'ERC1155') return 3
   return 2
 }
@@ -30,14 +32,16 @@ export default function AssetCard({ asset, chainId, compact = true, showUnverifi
   const itemType = resolveItemType(asset)
   const isNative = itemType === 0
   const isERC20 = itemType === 1
-  const isERC1155 = itemType === 3
-  const isNFT = itemType === 2 || itemType === 3
+  const isERC1155 = itemType === 3 || itemType === 5
+  const isCriteria = itemType === 4 || itemType === 5 || asset.criteria
+  const isNFT = itemType === 2 || itemType === 3 || itemType === 4 || itemType === 5
 
   // Look up ERC-20 symbol from whitelist
   const erc20Info = isERC20 && chainId ? (WHITELISTED_ERC20[chainId] || {})[asset.token] : null
 
   useEffect(() => {
-    if (!asset.token || !chainId || isERC20 || isNative) {
+    if (!asset.token || !chainId || isERC20 || isNative || isCriteria) {
+      if (isCriteria) setMetadata(null)
       setLoading(false)
       return
     }
@@ -65,7 +69,7 @@ export default function AssetCard({ asset, chainId, compact = true, showUnverifi
       })
 
     return () => { cancelled = true }
-  }, [asset.token, asset.tokenId, itemType, chainId, isERC20, isNative, isERC1155])
+  }, [asset.token, asset.tokenId, itemType, chainId, isERC20, isNative, isERC1155, isCriteria])
 
   // Fetch verification status (async — may call Alchemy)
   // Whitelisted ERC-20s are always verified — skip the lookup
@@ -123,9 +127,11 @@ export default function AssetCard({ asset, chainId, compact = true, showUnverifi
   // Display name for ERC-20
   const displayName = isERC20
     ? `${asset.amount || '0'} ${erc20Info?.symbol || 'tokens'}`
+    : isCriteria
+      ? asset._name || `Any token from ${asset.token.slice(0, 6)}...${asset.token.slice(-4)}`
     : metadata?.name || `#${asset.tokenId}`
 
-  const openseaUrl = isNFT ? `https://opensea.io/assets/${
+  const openseaUrl = isNFT && !isCriteria ? `https://opensea.io/assets/${
     { 1: 'ethereum', 8453: 'base', 137: 'matic', 57073: 'ink' }[chainId] || 'ethereum'
   }/${asset.token}/${asset.tokenId}` : null
 
@@ -143,6 +149,10 @@ export default function AssetCard({ asset, chainId, compact = true, showUnverifi
           erc20Info && TOKEN_LOGOS[erc20Info.symbol]
             ? <img src={TOKEN_LOGOS[erc20Info.symbol]} alt={erc20Info.symbol} />
             : <div className="asset-card-placeholder">$</div>
+        ) : isCriteria && asset._image ? (
+          <img src={asset._image} alt={displayName} loading="lazy" />
+        ) : isCriteria ? (
+          <div className="asset-card-placeholder">Any</div>
         ) : loading ? (
           <div className="asset-card-placeholder">...</div>
         ) : metadata?.image ? (
@@ -171,8 +181,8 @@ export default function AssetCard({ asset, chainId, compact = true, showUnverifi
               {asset.token}
             </a>
             <div className="asset-card-meta">
-              <span className="asset-type">{{ 0: nativeSym, 1: 'ERC-20', 2: 'ERC-721', 3: 'ERC-1155' }[itemType] || 'Unknown'}</span>
-              {isNFT && <span className="asset-card-tokenid">#{asset.tokenId}</span>}
+              <span className="asset-type">{{ 0: nativeSym, 1: 'ERC-20', 2: 'ERC-721', 3: 'ERC-1155', 4: 'ERC-721 criteria', 5: 'ERC-1155 criteria' }[itemType] || 'Unknown'}</span>
+              {isNFT && <span className="asset-card-tokenid">{isCriteria ? 'Any token' : `#${asset.tokenId}`}</span>}
             </div>
           </>
         ) : (
@@ -192,7 +202,7 @@ export default function AssetCard({ asset, chainId, compact = true, showUnverifi
         {showUnverifiedWarning && isNFT && vStatus.status !== 'verified' && (
           <div className="asset-card-warning">
             Unverified asset: review on{' '}
-            {openseaUrl ? <a href={openseaUrl} target="_blank" rel="noopener noreferrer">OpenSea</a> : 'OpenSea'}{' '}
+            {openseaUrl ? <a href={openseaUrl} target="_blank" rel="noopener noreferrer">OpenSea</a> : 'a marketplace'}{' '}
             to confirm that this is the intended asset.
           </div>
         )}

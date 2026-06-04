@@ -247,11 +247,22 @@ footer {
   margin-bottom: 0;
 }
 
+.faq-answer .faq-subhead {
+  margin-top: 0.85rem;
+  margin-bottom: 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
 .faq-zone-links {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
   margin-top: 0.5rem;
+}
+
+.faq-zone-links-deprecated {
+  opacity: 0.75;
 }
 
 .faq-zone-links code {
@@ -356,6 +367,23 @@ footer {
   font-size: 0.75rem;
   color: #e55;
   margin: 0.2rem 0 0.4rem 0.5rem;
+}
+
+.fillability-panel {
+  border: 1px solid var(--border);
+  border-left: 3px solid #4c4;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+  background: var(--bg-surface);
+}
+
+.fillability-panel-blocked {
+  border-left-color: #e55;
+}
+
+.fillability-panel p {
+  margin: 0.2rem 0;
 }
 
 /* Asset card */
@@ -739,6 +767,60 @@ footer {
 
 .text-danger {
   color: #e55;
+}
+
+.offer-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.85rem;
+  margin-top: 0.25rem;
+}
+
+.offer-actions .tx-checklist {
+  width: 100%;
+  margin: 0;
+}
+
+.support-tip-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.support-tip-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.support-tip-checkbox input {
+  width: auto;
+}
+
+.support-tip-amount {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--text-muted);
+}
+
+.support-tip-input {
+  width: 6rem;
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.95rem;
+}
+
+.support-tip-hint {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  margin: -0.45rem 0 0;
 }
 
 .btn-primary {
@@ -1149,9 +1231,10 @@ footer {
 
 .offer-card-warning {
   display: block;
-  font-size: 0.7rem;
+  margin-top: 0.35rem;
   color: #e55;
-  margin-top: 0.3rem;
+  font-size: 0.7rem;
+  line-height: 1.2;
 }
 
 .offer-memo {
@@ -1306,12 +1389,6 @@ footer {
 .tx-step-confirming .tx-step-icon { color: #ca4; animation: pulse 1.5s infinite; }
 .tx-step-done .tx-step-icon { color: #4c4; }
 .tx-step-failed .tx-step-icon { color: #c44; }
-
-.tx-step-error {
-  display: block;
-  font-size: 0.75rem;
-  color: #c44;
-}
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -1716,6 +1793,10 @@ footer {
   font-size: 1rem;
 }
 
+.collection-any-btn {
+  margin-bottom: 0.75rem;
+}
+
 /* Quantity Picker */
 
 .quantity-picker {
@@ -1753,6 +1834,37 @@ footer {
   display: flex;
   gap: 0.5rem;
   align-items: center;
+}
+
+.manual-any-toggle {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.manual-any-toggle input {
+  width: auto;
+}
+
+.criteria-resolver {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.criteria-resolver input {
+  width: 9rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.35rem 0.5rem;
+  font-family: inherit;
 }
 
 /* Cash Tab */
@@ -1940,6 +2052,26 @@ footer {
 
 .execute-error {
   margin-top: 1rem;
+}
+
+.execute-stuck {
+  margin-top: 1rem;
+}
+
+.submitted-registration {
+  margin-top: 1rem;
+}
+
+.submitted-transaction {
+  margin-top: 0.25rem;
+}
+
+.submitted-registration-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
 }
 
 /* ── Done ──────────────────────────────────────────────────── */

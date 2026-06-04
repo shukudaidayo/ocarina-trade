@@ -1,48 +1,30 @@
 import { useState } from 'react'
 import { ethers } from 'ethers'
 import { useCreateFlow } from './context'
-import { ZONE_ADDRESSES, CHAINS } from '../../lib/constants'
-import { useAppKitNetwork } from '@reown/appkit/react'
-import { mainnet, base, polygon } from '@reown/appkit/networks'
-import { ink } from '../../lib/appkit'
-
-const APPKIT_NETWORKS = {
-  1: mainnet,
-  8453: base,
-  137: polygon,
-  57073: ink,
-}
+import { ZONE_ADDRESSES, SELECTABLE_CHAIN_IDS, CHAINS } from '../../lib/constants'
 
 const CHAIN_LOGOS = {
   1: new URL('../../assets/tokens/eth.png', import.meta.url).href,
   8453: new URL('../../assets/chains/base.jpg', import.meta.url).href,
   137: new URL('../../assets/tokens/pol.png', import.meta.url).href,
-  57073: new URL('../../assets/chains/ink.png', import.meta.url).href,
 }
 
 const CHAIN_DESCRIPTIONS = {
   1: 'OG NFTs and ENS names',
   8453: 'Beezie, Slab, and RIP.FUN',
   137: 'Courtyard collectibles',
-  57073: 'Select Phygitals collectibles',
 }
 
 function getSwapUrl(chainId) {
   const symbol = CHAINS[chainId]?.nativeSymbol || 'ETH'
-  if (chainId === 57073) {
-    return { url: 'https://velodrome.finance/swap?to=eth&chain1=57073', label: `Buy ${symbol} on Velodrome` }
-  }
   const slugs = { 1: 'mainnet', 8453: 'base', 137: 'polygon' }
   return { url: `https://app.uniswap.org/swap?chain=${slugs[chainId]}&outputCurrency=NATIVE`, label: `Buy ${symbol} on Uniswap` }
 }
 
-const DEPLOYED_CHAINS = Object.entries(ZONE_ADDRESSES)
-  .filter(([, addr]) => addr !== null)
-  .map(([id]) => Number(id))
+const SELECTABLE_CHAINS = SELECTABLE_CHAIN_IDS.filter((id) => ZONE_ADDRESSES[id])
 
 export default function StepChain({ wallet }) {
   const { next, chainId, setChainId, setMakerAssets, setTakerAssets } = useCreateFlow()
-  const { switchNetwork } = useAppKitNetwork()
   const [noGasChain, setNoGasChain] = useState(null)
 
   const handleSelect = async (id) => {
@@ -57,7 +39,7 @@ export default function StepChain({ wallet }) {
     // Switch wallet network if needed
     if (wallet.chainId !== id) {
       try {
-        await switchNetwork(APPKIT_NETWORKS[id])
+        await switchWalletNetwork(wallet.provider, id)
       } catch {
         // User rejected — stay on this screen
         return
@@ -85,7 +67,7 @@ export default function StepChain({ wallet }) {
     <div className="wizard-screen">
       <h2>Which chain are you trading on?</h2>
       <div className="chain-cards">
-        {DEPLOYED_CHAINS.map((id) => (
+        {SELECTABLE_CHAINS.map((id) => (
           <button
             key={id}
             className={`chain-card${chainId === id ? ' chain-card-active' : ''}`}
@@ -122,4 +104,27 @@ export default function StepChain({ wallet }) {
       )}
     </div>
   )
+}
+
+async function switchWalletNetwork(provider, chainId) {
+  const chain = CHAINS[chainId]
+  const hexChainId = '0x' + chainId.toString(16)
+  try {
+    await provider.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: hexChainId }],
+    })
+  } catch (err) {
+    if (err?.code !== 4902 && err?.data?.originalError?.code !== 4902) throw err
+    await provider.request({
+      method: 'wallet_addEthereumChain',
+      params: [{
+        chainId: hexChainId,
+        chainName: chain?.name || `Chain ${chainId}`,
+        nativeCurrency: { name: chain?.nativeSymbol || 'Ether', symbol: chain?.nativeSymbol || 'ETH', decimals: 18 },
+        rpcUrls: [chain?.rpcUrl],
+        blockExplorerUrls: chain?.blockscoutApi ? [chain.blockscoutApi.replace(/\/api\/?$/, '')] : undefined,
+      }],
+    })
+  }
 }

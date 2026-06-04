@@ -13,11 +13,15 @@ contracts/lib/
 refs/
 
 # Dev tools
+.tools/
 deploy.html
 mint-1155.html
+deployers/
 
 # Claude
 .claude/
+.agents/
+.codex/
 CLAUDE.md
 .claudeignore
 
@@ -27,6 +31,7 @@ SPEC-OG.md
 
 # Audit reports — tracked privately until findings are addressed in a redeploy
 *audit-report*.md
+AUDIT-HISTORY.md
 
 # OS
 .DS_Store

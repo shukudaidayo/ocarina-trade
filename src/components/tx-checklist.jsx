@@ -1,8 +1,9 @@
 import { truncateAddress } from '../lib/wallet'
 
-// status: 'pending' | 'signing' | 'confirming' | 'done' | 'failed'
+// status: 'pending' | 'checking' | 'signing' | 'confirming' | 'done' | 'failed'
 const STATUS_ICONS = {
   pending: '\u25cb',    // ○
+  checking: '\u25cf',   // ●
   signing: '\u25cf',    // ●
   confirming: '\u25cf', // ●
   done: '\u2713',       // ✓
@@ -11,6 +12,7 @@ const STATUS_ICONS = {
 
 const STATUS_LABELS = {
   pending: 'Waiting',
+  checking: 'Checking...',
   signing: 'Sign in wallet...',
   confirming: 'Confirming...',
   done: 'Done',
@@ -27,7 +29,6 @@ export default function TxChecklist({ steps }) {
           <span className="tx-step-icon">{STATUS_ICONS[step.status]}</span>
           <span className="tx-step-label">{step.label}</span>
           <span className="tx-step-status">{STATUS_LABELS[step.status]}</span>
-          {step.error && <span className="tx-step-error">{step.error}</span>}
         </div>
       ))}
     </div>
@@ -36,9 +37,9 @@ export default function TxChecklist({ steps }) {
 
 /**
  * Build the list of steps for approvals + action(s).
- * One approval step per unique token contract, then one or two action steps.
+ * One approval step per unique token contract, then one step per action label.
  */
-export function buildSteps(assets, actionLabel, actionLabel2) {
+export function buildSteps(assets, ...actionLabels) {
   const steps = []
   const seen = new Set()
 
@@ -56,18 +57,9 @@ export function buildSteps(assets, actionLabel, actionLabel2) {
     }
   }
 
-  steps.push({
-    label: actionLabel,
-    status: 'pending',
-    type: 'action',
-  })
-
-  if (actionLabel2) {
-    steps.push({
-      label: actionLabel2,
-      status: 'pending',
-      type: 'action',
-    })
+  for (const label of actionLabels) {
+    if (!label) continue
+    steps.push({ label, status: 'pending', type: 'action' })
   }
 
   return steps

@@ -1,8 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
-import { ZONE_ADDRESSES } from '../lib/constants'
+import { ZONE_ADDRESSES, DEPRECATED_OTCZONE_ADDRESSES } from '../lib/constants'
 import { getEtherscanUrl } from '../lib/verification'
 
 const ZONE_CHAINS = [
+  { chainId: 1, name: 'Ethereum' },
+  { chainId: 8453, name: 'Base' },
+  { chainId: 137, name: 'Polygon' },
+  { chainId: 11155111, name: 'Sepolia (testnet)' },
+]
+
+const DEPRECATED_OTCZONE_CHAINS = [
   { chainId: 1, name: 'Ethereum' },
   { chainId: 8453, name: 'Base' },
   { chainId: 137, name: 'Polygon' },
@@ -23,12 +30,12 @@ const questions = [
   {
     id: 'audit',
     q: 'Is the Ocarina smart contract audited?',
-    a: ({ zoneLinks }) => <><p>Seaport contracts are <a href="https://github.com/trailofbits/publications/blob/master/reviews/SeaportProtocol.pdf" target="_blank" rel="noopener noreferrer">fully audited</a>.</p><p>Besides Seaport, Ocarina relies on a small smart contract, OTCZone, to post offers onchain and limit which cash tokens can be included in Ocarina offers. Although this contract hasn't been audited, it isn't in the flow of assets — even if it does somehow get rekt, your assets are safe.</p><p>The OTCZone contract is deployed at the addresses below:</p>{zoneLinks}</>,
+    a: ({ zoneLinks, deprecatedZoneLinks }) => <><p>Seaport contracts are <a href="https://github.com/trailofbits/publications/blob/master/reviews/SeaportProtocol.pdf" target="_blank" rel="noopener noreferrer">fully audited</a>.</p><p>Besides Seaport, Ocarina relies on a small smart contract, OTCRegistry, to post offers onchain and limit which cash tokens can be included in Ocarina offers. Although this contract hasn't been audited, it isn't in the flow of assets — even if it does somehow get rekt, your assets are safe.</p><p>The current OTCRegistry contract is deployed at the addresses below:</p>{zoneLinks}<p className="faq-subhead">Deprecated OTCZone addresses:</p>{deprecatedZoneLinks}</>,
   },
   {
     id: 'assets',
     q: 'What assets can I trade?',
-    a: <><p>Ocarina supports most onchain collectibles, WETH, and a limited number of stablecoins. We limit which cash assets you can include in trades so that you never have to wonder if "USDC" is the real deal or a worthless token with the same name.</p><p>Currently, Ocarina supports Ethereum, Polygon, Base, and Ink. Cross-chain trades are not supported — both sides of the trade have to be on the same chain. Solana is not supported.</p></>,
+    a: <><p>Ocarina supports most onchain collectibles, WETH, and a limited number of stablecoins. We limit which cash assets you can include in trades so that you never have to wonder if "USDC" is the real deal or a worthless token with the same name.</p><p>Currently, Ocarina supports Ethereum, Base, and Polygon. Cross-chain trades are not supported — both sides of the trade have to be on the same chain. Solana is not supported.</p></>,
   },
   {
     id: 'fees',
@@ -43,7 +50,7 @@ const questions = [
   {
     id: 'unverified',
     q: 'Why do some assets show as "unverified"?',
-    a: <><p>To help prevent scams, Ocarina uses <a href="https://www.alchemy.com/nft-api" target="_blank" rel="noopener noreferrer">Alchemy</a> to verify collectibles. When accepting an offer with assets from unverified collections, we'll warn you and show you the unverified contract addresses before you can accept the trade — we recommend that you search these contracts on OpenSea or another data source, so you know what you're getting.</p><p>Alchemy currently doesn't support Ink collectibles, so you'll see this warning on every Ink trade.</p></>,
+    a: <><p>To help prevent scams, Ocarina uses <a href="https://www.alchemy.com/nft-api" target="_blank" rel="noopener noreferrer">Alchemy</a> to verify collectibles. When accepting an offer with assets from unverified collections, we'll warn you and show you the unverified contract addresses before you can accept the trade — we recommend that you search these contracts on OpenSea or another data source, so you know what you're getting.</p><p>On testnets or chains without Alchemy verification data, assets may appear unverified even when entered correctly.</p></>,
   },
   {
     id: 'multiple-offers',
@@ -114,6 +121,16 @@ export default function FAQ() {
     </span>
   )
 
+  const deprecatedZoneLinks = (
+    <span className="faq-zone-links faq-zone-links-deprecated">
+      {DEPRECATED_OTCZONE_CHAINS.map(({ chainId, name }) => (
+        <span key={chainId}>
+          {name}: <a href={getEtherscanUrl(chainId, DEPRECATED_OTCZONE_ADDRESSES[chainId])} target="_blank" rel="noopener noreferrer"><code>{DEPRECATED_OTCZONE_ADDRESSES[chainId]}</code></a>
+        </span>
+      ))}
+    </span>
+  )
+
   return (
     <div className="page faq">
       <h1>FAQ</h1>
@@ -140,7 +157,7 @@ export default function FAQ() {
               className="faq-item"
             >
               <h2>{q}</h2>
-              <div className="faq-answer">{typeof a === 'function' ? a({ zoneLinks }) : a}</div>
+              <div className="faq-answer">{typeof a === 'function' ? a({ zoneLinks, deprecatedZoneLinks }) : a}</div>
             </section>
           ))}
         </div>

@@ -1,9 +1,69 @@
-import { BrowserProvider, Contract, Interface, JsonRpcProvider, zeroPadValue, ZeroHash, parseUnits } from 'ethers'
+import { AbiCoder, BrowserProvider, Contract, Interface, JsonRpcProvider, zeroPadValue, ZeroHash, ZeroAddress, parseUnits } from 'ethers'
 import { Seaport } from '@opensea/seaport-js'
-import { ItemType } from '@opensea/seaport-js/lib/constants'
+import { ItemType, OrderType } from '@opensea/seaport-js/lib/constants'
 import { CHAINS, SEAPORT_ADDRESS, ZONE_ADDRESSES, ZONE_DEPLOY_BLOCKS, ZONE_ABI, WHITELISTED_ERC20 } from './constants'
+import { getArchivedOrderFromTx } from './legacy-offers'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+const ZONE_HASH_VERSION = 1n
+const TAKER_MASK = (1n << 160n) - 1n
+const COUNT_MASK = (1n << 32n) - 1n
+const VERSION_MASK = (1n << 8n) - 1n
+
+function encodeZoneHash(taker, originalConsiderationCount) {
+  const takerValue = taker && taker !== ZERO_ADDRESS ? BigInt(taker) : 0n
+  const count = BigInt(originalConsiderationCount)
+  const packed = takerValue | (count << 160n) | (ZONE_HASH_VERSION << 192n)
+  return `0x${packed.toString(16).padStart(64, '0')}`
+}
+
+function decodeZoneHash(zoneHash) {
+  const packed = BigInt(zoneHash)
+  return {
+    taker: `0x${(packed & TAKER_MASK).toString(16).padStart(40, '0')}`,
+    originalConsiderationCount: Number((packed >> 160n) & COUNT_MASK),
+    version: Number((packed >> 192n) & VERSION_MASK),
+    reserved: packed >> 200n,
+  }
+}
+
+function zoneHashMatchesOrder(parameters, taker) {
+  const metadata = decodeZoneHash(parameters.zoneHash)
+  return metadata.version === Number(ZONE_HASH_VERSION) &&
+    metadata.reserved === 0n &&
+    metadata.originalConsiderationCount === parameters.consideration.length &&
+    metadata.taker.toLowerCase() === taker.toLowerCase()
+}
+
+const SEAPORT_FULFILL_ABI = [
+  'function fulfillOrder((tuple(address offerer,address zone,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)[] offer,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 totalOriginalConsiderationItems) parameters,bytes signature) order,bytes32 fulfillerConduitKey) payable returns (bool fulfilled)',
+  'function fulfillAdvancedOrder((tuple(address offerer,address zone,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)[] offer,tuple(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 totalOriginalConsiderationItems) parameters,uint120 numerator,uint120 denominator,bytes signature,bytes extraData) advancedOrder,tuple(uint256 orderIndex,uint8 side,uint256 index,uint256 identifier,bytes32[] criteriaProof)[] criteriaResolvers,bytes32 fulfillerConduitKey,address recipient) payable returns (bool fulfilled)',
+]
+
+// EIP-712 types for OTCRegistry.registerOrder. Mirrors the typehash in OTCRegistry.sol.
+const REGISTRATION_TYPES = {
+  OrderRegistration: [
+    { name: 'orderHash', type: 'bytes32' },
+    { name: 'seaportSignature', type: 'bytes' },
+    { name: 'memo', type: 'string' },
+  ],
+}
+
+const TIP_AUTHORIZATION_TYPES = {
+  TipAuthorization: [
+    { name: 'orderHash', type: 'bytes32' },
+    { name: 'fulfiller', type: 'address' },
+    { name: 'tips', type: 'TipItem[]' },
+    { name: 'deadline', type: 'uint256' },
+  ],
+  TipItem: [
+    { name: 'itemType', type: 'uint8' },
+    { name: 'token', type: 'address' },
+    { name: 'identifier', type: 'uint256' },
+    { name: 'amount', type: 'uint256' },
+    { name: 'recipient', type: 'address' },
+  ],
+}
 
 /**
  * Retry an async function up to `n` times with a brief delay between attempts.
@@ -18,6 +78,11 @@ async function retry(fn, n = 3, delayMs = 500) {
       await new Promise((r) => setTimeout(r, delayMs * (i + 1)))
     }
   }
+}
+
+function blockscoutNumber(value) {
+  if (value === undefined || value === null) return undefined
+  return Number(value)
 }
 
 const APPROVAL_ABI = [
@@ -87,9 +152,22 @@ function toSeaportOfferItem(asset, chainId) {
       amount: parseUnits(asset.amount || '0', decimals).toString(),
     }
   }
-  const seaportItemType = asset.assetType === 'ERC1155' || asset.itemType === ItemType.ERC1155
+  const isERC1155 = asset.assetType === 'ERC1155' || asset.itemType === ItemType.ERC1155 || asset.itemType === ItemType.ERC1155_WITH_CRITERIA
+  const seaportItemType = isERC1155
     ? ItemType.ERC1155
     : ItemType.ERC721
+
+  if (asset.criteria || asset.itemType === ItemType.ERC721_WITH_CRITERIA || asset.itemType === ItemType.ERC1155_WITH_CRITERIA) {
+    const item = {
+      itemType: seaportItemType,
+      token: asset.token,
+      criteria: asset.criteriaRoot || '0',
+    }
+    if (seaportItemType === ItemType.ERC1155) {
+      item.amount = (asset.amount || '1').toString()
+    }
+    return item
+  }
 
   const item = {
     itemType: seaportItemType,
@@ -110,7 +188,7 @@ function toSeaportConsiderationItem(asset, recipient, chainId) {
 }
 
 /**
- * Create a Seaport order: sign off-chain + register on OTCZone.
+ * Create a Seaport order: sign off-chain + register on OTCRegistry.
  * Returns { order, tx, wait } where tx is the registerOrder tx.
  */
 export async function createOrder(rawProvider, chainId, {
@@ -120,18 +198,17 @@ export async function createOrder(rawProvider, chainId, {
   expiration,
   makerAddress,
   memo = '',
+  onSeaportSigned,
+  onRegistrationSigned,
 }) {
   const zoneAddress = ZONE_ADDRESSES[chainId]
-  if (!zoneAddress) throw new Error(`No OTCZone deployed on chain ${chainId}`)
+  if (!zoneAddress) throw new Error(`No OTCRegistry deployed on chain ${chainId}`)
 
   const seaport = await getSeaport(rawProvider)
 
-  const zoneHash = taker && taker !== ZERO_ADDRESS
-    ? zeroPadValue(taker, 32)
-    : ZeroHash
-
   const offer = makerAssets.map((a) => toSeaportOfferItem(a, chainId))
   const consideration = takerAssets.map((a) => toSeaportConsiderationItem(a, makerAddress, chainId))
+  const zoneHash = encodeZoneHash(taker, consideration.length)
 
   const endTime = expiration
     ? Math.floor(new Date(expiration).getTime() / 1000).toString()
@@ -144,50 +221,45 @@ export async function createOrder(rawProvider, chainId, {
     offer,
     consideration,
     restrictedByZone: true,
+    conduitKey: ZeroHash,
     endTime,
   })
 
   const order = await executeAllActions()
+  onSeaportSigned?.()
 
-  // Compute the order hash
+  // Compute the order hash (local seaport-js computation, matches onchain getOrderHash)
   const orderHash = seaport.getOrderHash(order.parameters)
 
-  // Encode the signed order as the orderURI
-  const orderURI = btoa(JSON.stringify(order))
-
-  // Register on OTCZone for discovery
+  // Register on OTCRegistry for discovery
   const signer = await getSigner(rawProvider)
-  const zone = new Contract(zoneAddress, ZONE_ABI, signer)
+  const zoneContract = new Contract(zoneAddress, ZONE_ABI, signer)
 
-  // Build SpentItem[] and ReceivedItem[] from the order parameters
-  const spentItems = order.parameters.offer.map((o) => ({
-    itemType: Number(o.itemType),
-    token: o.token,
-    identifier: BigInt(o.identifierOrCriteria),
-    amount: BigInt(o.startAmount),
-  }))
-
-  const receivedItems = order.parameters.consideration.map((c) => ({
-    itemType: Number(c.itemType),
-    token: c.token,
-    identifier: BigInt(c.identifierOrCriteria),
-    amount: BigInt(c.startAmount),
-    recipient: c.recipient,
-  }))
-
-  const takerAddress = taker && taker !== ZERO_ADDRESS ? taker : ZERO_ADDRESS
-
-  const reg = {
+  // Maker signs (orderHash, seaportSignature, memo) under OTCRegistry's EIP-712 domain.
+  // orderHash transitively binds all OrderComponents fields (including offerer, taker via
+  // zoneHash, and endTime). seaportSignature is bound directly to prevent a front-runner
+  // from substituting a bad Seaport sig using this registration sig.
+  const domain = {
+    name: 'OTCRegistry',
+    version: '1',
+    chainId,
+    verifyingContract: zoneAddress,
+  }
+  const regValue = {
     orderHash,
-    maker: makerAddress,
-    taker: takerAddress,
-    offer: spentItems,
-    consideration: receivedItems,
-    signature: order.signature,
-    orderURI,
+    seaportSignature: order.signature,
     memo,
   }
-  const tx = await zone.registerOrder(reg)
+  const registrationSignature = await signer.signTypedData(domain, REGISTRATION_TYPES, regValue)
+  onRegistrationSigned?.()
+
+  const reg = {
+    components: order.parameters,
+    seaportSignature: order.signature,
+    signature: registrationSignature,
+    memo,
+  }
+  const tx = await zoneContract.registerOrder(reg)
 
   return {
     order,
@@ -198,53 +270,85 @@ export async function createOrder(rawProvider, chainId, {
 }
 
 /**
- * Verify an OrderRegistered event and extract authenticated fields.
- *
- * The OTCZone contract only binds `orderHash` + `maker` via signature — every
- * other event field (`taker`, `orderURI`, `memo`) is forgeable by anyone who
- * observed a maker's public signature. We re-anchor trust by recomputing the
- * Seaport order hash from the decoded orderURI: if it matches `orderHash`,
- * the decoded order is cryptographically the exact order the maker signed, so
- * `offerer`, `offer`, `consideration`, and `zoneHash` (→ taker) are safe to use.
- *
- * Returns null when verification fails — caller should skip the event.
- *
- * Residual risk: `memo` is not covered by any onchain hash and remains
- * unauthenticated. See SPEC-SEAPORT.md § Contract Upgrades for the deferred
- * contract-side fix (bind all registration fields into a typed EIP-712 digest).
+ * Convert ABI-decoded OrderComponents (ethers Result with BigInt values) to the
+ * plain-object format seaport-js expects for fulfillOrder and getOrderHash.
  */
-function verifyAndExtract(parsedOrLog, chainId) {
-  const args = parsedOrLog.args
-  let order
-  try { order = JSON.parse(atob(args.orderURI)) } catch { return null }
-  if (!order?.parameters) return null
-
-  let computedHash
-  try { computedHash = getReadSeaport(chainId).getOrderHash(order.parameters) }
-  catch { return null }
-  if (computedHash.toLowerCase() !== args.orderHash.toLowerCase()) return null
-
-  // Derive taker from the decoded order's zoneHash — identical to the contract's
-  // `address(uint160(uint256(zoneHash)))` cast. Ignore the event's taker field.
-  const zoneHash = order.parameters.zoneHash || ZeroHash
-  const taker = '0x' + zoneHash.slice(-40).toLowerCase()
-
+function componentsFromEvent(c) {
+  const consideration = Array.from(c.consideration).map((item) => ({
+    itemType: Number(item.itemType),
+    token: item.token,
+    identifierOrCriteria: item.identifierOrCriteria.toString(),
+    startAmount: item.startAmount.toString(),
+    endAmount: item.endAmount.toString(),
+    recipient: item.recipient,
+  }))
   return {
-    orderHash: args.orderHash,
-    maker: order.parameters.offerer,
-    taker,
-    memo: args.memo || '',
-    order,
+    offerer: c.offerer,
+    zone: c.zone,
+    offer: Array.from(c.offer).map((item) => ({
+      itemType: Number(item.itemType),
+      token: item.token,
+      identifierOrCriteria: item.identifierOrCriteria.toString(),
+      startAmount: item.startAmount.toString(),
+      endAmount: item.endAmount.toString(),
+    })),
+    consideration,
+    orderType: Number(c.orderType),
+    startTime: c.startTime.toString(),
+    endTime: c.endTime.toString(),
+    zoneHash: c.zoneHash,
+    salt: c.salt.toString(),
+    conduitKey: c.conduitKey,
+    counter: c.counter.toString(),
+    // seaport-js OrderComponents extends OrderParameters, which includes this field.
+    // For a standard (non-criteria) order it equals consideration.length.
+    totalOriginalConsiderationItems: consideration.length,
+  }
+}
+
+/**
+ * Decode an OrderRegistered event and recover the full Seaport order.
+ *
+ * The contract now verifies zone, orderType, taker/zoneHash alignment, and
+ * derives orderHash via ISeaport.getOrderHash(components) before emitting —
+ * so the event is trustworthy by construction. Registration pre-validates the
+ * order hash in Seaport, so fulfillment uses an empty signature.
+ */
+function verifyAndExtract(parsedOrLog) {
+  const args = parsedOrLog.args
+  try {
+    const order = {
+      parameters: componentsFromEvent(args.components),
+      signature: '0x',
+    }
+    if (!zoneHashMatchesOrder(order.parameters, args.taker)) return null
+
+    return {
+      orderHash: args.orderHash,
+      maker: args.maker,
+      taker: args.taker,
+      memo: args.memo || '',
+      order,
+    }
+  } catch {
+    return null
   }
 }
 
 /**
  * Fetch order data from a registerOrder transaction hash.
- * Returns the parsed OrderRegistered event data + decoded signed order.
+ * Returns the parsed OrderRegistered event data + decoded validated order.
  */
 export async function getOrderFromTx(chainId, txHash) {
+  const archived = getArchivedOrderFromTx(chainId, txHash)
+  if (archived) return archived
+
   const chain = CHAINS[chainId]
   if (!chain) throw new Error(`Unsupported chain ${chainId}`)
+  const zoneAddress = ZONE_ADDRESSES[chainId]
+  if (!zoneAddress) throw new Error(`No OTCRegistry deployed on chain ${chainId}`)
+  const expectedZone = zoneAddress.toLowerCase()
+
   return retry(async () => {
     const provider = new JsonRpcProvider(chain.rpcUrl)
     const receipt = await provider.getTransactionReceipt(txHash)
@@ -252,12 +356,23 @@ export async function getOrderFromTx(chainId, txHash) {
 
     const iface = new Interface(ZONE_ABI)
     for (const log of receipt.logs) {
+      if (log.address.toLowerCase() !== expectedZone) continue
       let parsed
       try { parsed = iface.parseLog(log) } catch { continue }
       if (parsed?.name !== 'OrderRegistered') continue
-      const extracted = verifyAndExtract(parsed, chainId)
+      const extracted = verifyAndExtract(parsed)
       if (!extracted) throw new Error('Order registration failed verification — the event does not match the signed order.')
-      return { zoneAddress: receipt.to, ...extracted }
+      if (extracted.order.parameters.zone.toLowerCase() !== expectedZone) {
+        throw new Error('Order registration failed verification — the order uses an unexpected zone.')
+      }
+      if (extracted.order.parameters.orderType !== OrderType.FULL_RESTRICTED) {
+        throw new Error('Order registration failed verification — the order is not restricted by the registry.')
+      }
+      const derivedHash = getReadSeaport(chainId).getOrderHash(extracted.order.parameters)
+      if (derivedHash.toLowerCase() !== extracted.orderHash.toLowerCase()) {
+        throw new Error('Order registration failed verification — the event order hash does not match the decoded order.')
+      }
+      return { zoneAddress, ...extracted }
     }
     throw new Error('No OrderRegistered event found in transaction')
   })
@@ -287,13 +402,129 @@ export async function getOrderStatus(chainId, orderHash) {
   })
 }
 
+export async function getCounter(chainId, offerer) {
+  const chain = CHAINS[chainId]
+  if (!chain) throw new Error(`Unsupported chain ${chainId}`)
+  return retry(async () => {
+    const seaport = getReadSeaport(chainId)
+    return seaport.getCounter(offerer)
+  })
+}
+
 /**
  * Fulfill (accept) a Seaport order. Returns { tx, wait }.
  */
-export async function fulfillOrder(rawProvider, order) {
-  const seaport = await getSeaport(rawProvider)
-  const { executeAllActions } = await seaport.fulfillOrder({ order })
-  const tx = await executeAllActions()
+function isCriteriaItem(item) {
+  const itemType = Number(item.itemType)
+  return itemType === ItemType.ERC721_WITH_CRITERIA || itemType === ItemType.ERC1155_WITH_CRITERIA
+}
+
+function buildCriteriaResolvers(order, criteriaSelections = {}) {
+  const resolvers = []
+  order.parameters.offer.forEach((item, index) => {
+    if (!isCriteriaItem(item)) return
+    const identifier = criteriaSelections.offer?.[index]
+    if (!identifier && identifier !== '0') throw new Error('Choose a token ID for every criteria item before accepting this offer.')
+    resolvers.push({ orderIndex: 0, side: 0, index, identifier: identifier.toString(), criteriaProof: [] })
+  })
+  order.parameters.consideration.forEach((item, index) => {
+    if (!isCriteriaItem(item)) return
+    const identifier = criteriaSelections.consideration?.[index]
+    if (!identifier && identifier !== '0') throw new Error('Choose a token ID for every criteria item before accepting this offer.')
+    resolvers.push({ orderIndex: 0, side: 1, index, identifier: identifier.toString(), criteriaProof: [] })
+  })
+  return resolvers
+}
+
+function nativeConsiderationValue(order, tips = []) {
+  const originalValue = order.parameters.consideration.reduce((sum, item) => (
+    Number(item.itemType) === ItemType.NATIVE ? sum + BigInt(item.startAmount) : sum
+  ), 0n)
+  return tips.reduce((sum, tip) => (
+    Number(tip.itemType) === ItemType.NATIVE ? sum + BigInt(tip.amount) : sum
+  ), originalValue)
+}
+
+function advancedOrderFromOrder(order, tips = [], extraData = '0x') {
+  const tipConsideration = tips.map((tip) => ({
+    itemType: tip.itemType,
+    token: tip.token,
+    identifierOrCriteria: tip.identifier,
+    startAmount: tip.amount,
+    endAmount: tip.amount,
+    recipient: tip.recipient,
+  }))
+  return {
+    parameters: {
+      ...order.parameters,
+      consideration: [...order.parameters.consideration, ...tipConsideration],
+    },
+    signature: order.signature,
+    extraData,
+    numerator: 1,
+    denominator: 1,
+  }
+}
+
+export async function signTipAuthorization(rawProvider, chainId, zoneAddress, orderHash, tips) {
+  if (!tips?.length) return '0x'
+  const signer = await getSigner(rawProvider)
+  const fulfiller = await signer.getAddress()
+  const deadline = Math.floor(Date.now() / 1000 + 10 * 60).toString()
+  const domain = {
+    name: 'OTCRegistry',
+    version: '1',
+    chainId,
+    verifyingContract: zoneAddress,
+  }
+  const value = { orderHash, fulfiller, tips, deadline }
+  const signature = await signer.signTypedData(domain, TIP_AUTHORIZATION_TYPES, value)
+  return AbiCoder.defaultAbiCoder().encode(['uint256', 'bytes'], [deadline, signature])
+}
+
+/**
+ * Simulate the exact Seaport fill transaction from the connected wallet.
+ * Run after needed approvals are in place; otherwise the simulation will fail
+ * for missing taker approval rather than collection transfer policy.
+ */
+export async function simulateFulfillment(rawProvider, chainId, orderHash, order, criteriaSelections = null, tips = [], tipAuthorization = null) {
+  const signer = await getSigner(rawProvider)
+  const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
+  const value = nativeConsiderationValue(order, tips)
+  const criteriaResolvers = criteriaSelections ? buildCriteriaResolvers(order, criteriaSelections) : []
+
+  if (criteriaResolvers.length > 0 || tips.length > 0) {
+    const extraData = tipAuthorization ?? await signTipAuthorization(rawProvider, chainId, order.parameters.zone, orderHash, tips)
+    return seaport.fulfillAdvancedOrder.staticCall(
+      advancedOrderFromOrder(order, tips, extraData),
+      criteriaResolvers,
+      ZeroHash,
+      ZeroAddress,
+      { value }
+    )
+  }
+
+  return seaport.fulfillOrder.staticCall(order, ZeroHash, { value })
+}
+
+export async function fulfillOrder(rawProvider, chainId, orderHash, order, criteriaSelections = null, tips = [], tipAuthorization = null) {
+  const criteriaResolvers = criteriaSelections ? buildCriteriaResolvers(order, criteriaSelections) : []
+  if (criteriaResolvers.length > 0 || tips.length > 0) {
+    const signer = await getSigner(rawProvider)
+    const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
+    const extraData = tipAuthorization ?? await signTipAuthorization(rawProvider, chainId, order.parameters.zone, orderHash, tips)
+    const tx = await seaport.fulfillAdvancedOrder(
+      advancedOrderFromOrder(order, tips, extraData),
+      criteriaResolvers,
+      ZeroHash,
+      ZeroAddress,
+      { value: nativeConsiderationValue(order, tips) }
+    )
+    return { tx, wait: () => tx.wait() }
+  }
+  const signer = await getSigner(rawProvider)
+  const seaport = new Contract(SEAPORT_ADDRESS, SEAPORT_FULFILL_ABI, signer)
+  const tx = await seaport.fulfillOrder(order, ZeroHash, { value: nativeConsiderationValue(order) })
   return { tx, wait: () => tx.wait() }
 }
 
@@ -307,8 +538,8 @@ export async function cancelOrder(rawProvider, orderComponents) {
 }
 
 /**
- * Query all OrderRegistered events from the OTCZone contract.
- * Uses Blockscout API to get tx list, then fetches receipts via RPC.
+ * Query all OrderRegistered events from the OTCRegistry contract.
+ * Uses Blockscout logs for full-history discovery.
  * Falls back to scanning recent blocks via RPC if Blockscout is unavailable.
  */
 export async function queryOrderEvents(chainId, zoneAddress) {
@@ -349,6 +580,45 @@ function dedupeByOrderHash(registrations) {
 }
 
 async function queryViaBlockscout(chainId, zoneAddress, chain) {
+  const viaLogs = await queryViaBlockscoutLogs(chainId, zoneAddress, chain)
+  if (viaLogs !== null) return viaLogs
+  return queryViaBlockscoutTxlist(chainId, zoneAddress, chain)
+}
+
+async function queryViaBlockscoutLogs(chainId, zoneAddress, chain) {
+  const iface = new Interface(ZONE_ABI)
+  const topic0 = iface.getEvent('OrderRegistered').topicHash
+  const startBlock = ZONE_DEPLOY_BLOCKS[chainId] ?? 0
+  const url = `${chain.blockscoutApi}?module=logs&action=getLogs&address=${zoneAddress}&fromBlock=${startBlock}&toBlock=latest&topic0=${topic0}`
+  const res = await fetch(url)
+  if (!res.ok) return null
+
+  const data = await res.json()
+  if (data.status !== '1' || !Array.isArray(data.result)) {
+    if (data.message === 'No logs found') return []
+    return null
+  }
+
+  const registrations = []
+  for (const log of data.result) {
+    let parsed
+    try { parsed = iface.parseLog({ topics: log.topics, data: log.data }) } catch { continue }
+    if (parsed?.name !== 'OrderRegistered') continue
+    const extracted = verifyAndExtract(parsed)
+    if (!extracted) continue
+    registrations.push({
+      ...extracted,
+      blockNumber: blockscoutNumber(log.blockNumber),
+      transactionHash: log.transactionHash,
+      logIndex: blockscoutNumber(log.logIndex ?? log.index) ?? 0,
+    })
+  }
+
+  return registrations
+}
+
+async function queryViaBlockscoutTxlist(chainId, zoneAddress, chain) {
+  const expectedZone = zoneAddress.toLowerCase()
   const url = `${chain.blockscoutApi}?module=account&action=txlist&address=${zoneAddress}&startblock=0&endblock=99999999&sort=asc`
   const res = await fetch(url)
   if (!res.ok) return null
@@ -378,10 +648,11 @@ async function queryViaBlockscout(chainId, zoneAddress, chain) {
           const receipt = await retry(() => provider.getTransactionReceipt(tx.hash))
           if (!receipt) return null
           for (const log of receipt.logs) {
+            if (log.address.toLowerCase() !== expectedZone) continue
             let parsed
             try { parsed = iface.parseLog(log) } catch { continue }
             if (parsed?.name !== 'OrderRegistered') continue
-            const extracted = verifyAndExtract(parsed, chainId)
+            const extracted = verifyAndExtract(parsed)
             if (!extracted) continue
             return {
               ...extracted,
@@ -429,7 +700,7 @@ async function queryViaRpc(chainId, zoneAddress, chain) {
   }
 
   const registrations = logs.flatMap((log) => {
-    const extracted = verifyAndExtract(log, chainId)
+    const extracted = verifyAndExtract(log)
     if (!extracted) return []
     return [{
       ...extracted,
@@ -484,10 +755,11 @@ export async function getFillTxHash(chainId, orderHash, offerer) {
 /**
  * Derive the status label for an order.
  */
-export function deriveOrderStatus(seaportStatus, endTime) {
+export function deriveOrderStatus(seaportStatus, endTime, liveCounter, orderCounter) {
   if (!seaportStatus) return 'unknown'
   if (seaportStatus.isCancelled) return 'cancelled'
   if (seaportStatus.totalFilled > 0 && seaportStatus.totalFilled === seaportStatus.totalSize) return 'filled'
+  if (liveCounter !== undefined && orderCounter !== undefined && BigInt(liveCounter) > BigInt(orderCounter)) return 'cancelled'
   if (endTime && Number(endTime) < Date.now() / 1000) return 'expired'
   return 'open'
 }

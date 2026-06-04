@@ -1,21 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useOutletContext, useSearchParams } from 'react-router'
-import { queryOrderEvents, getOrderStatus, deriveOrderStatus } from '../lib/contract'
-import { checkHoldings } from '../lib/balances'
+import { queryOrderEvents, getOrderStatus, getCounter, deriveOrderStatus } from '../lib/contract'
+import { getArchivedOfferRecords } from '../lib/legacy-offers'
+import { checkMakerOfferAvailability } from '../lib/asset-checks'
 import { fetchMetadata } from '../lib/metadata'
 import { resolveENSName } from '../lib/ens'
 import AddressDisplay from '../components/address-display'
-import { ZONE_ADDRESSES, CHAINS, WHITELISTED_ERC20 } from '../lib/constants'
-import { formatUnits } from 'ethers'
+import { ZONE_ADDRESSES, SELECTABLE_CHAIN_IDS, CHAINS, WHITELISTED_ERC20 } from '../lib/constants'
+import { formatUnits, isAddress } from 'ethers'
 import { formatTokenAmount } from '../lib/wallet'
+import { ItemType } from '@opensea/seaport-js/lib/constants'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const PAGE_SIZE = 20
 
-// Chains that have a deployed zone contract
-const DEPLOYED_CHAINS = Object.entries(ZONE_ADDRESSES)
-  .filter(([, addr]) => addr !== null)
-  .map(([id]) => Number(id))
+const SELECTABLE_CHAINS = SELECTABLE_CHAIN_IDS.filter((id) => ZONE_ADDRESSES[id])
 
 // Map chain names to chain IDs for URL params
 const CHAIN_NAME_TO_ID = {}
@@ -27,11 +26,19 @@ function parseChainParam(value) {
   if (!value || value === 'all') return 'all'
   // Try as chain ID first
   const asNum = Number(value)
-  if (DEPLOYED_CHAINS.includes(asNum)) return String(asNum)
+  if (SELECTABLE_CHAINS.includes(asNum)) return String(asNum)
   // Try as chain name
   const id = CHAIN_NAME_TO_ID[value.toLowerCase()]
-  if (id && DEPLOYED_CHAINS.includes(id)) return String(id)
+  if (id && SELECTABLE_CHAINS.includes(id)) return String(id)
   return 'all'
+}
+
+function makerAvailabilityRank(order) {
+  return order.makerAvailability === 'missing' ? 0 : 1
+}
+
+function orderAvailabilityKey(order) {
+  return `${order.chainId}:${order.orderHash}`
 }
 
 export default function Offers() {
@@ -47,6 +54,7 @@ export default function Offers() {
 
   // Resolved address filter (from ENS or direct)
   const [resolvedAddress, setResolvedAddress] = useState('')
+  const [addressFilterStatus, setAddressFilterStatus] = useState('idle')
   // Local input state for text fields (synced to URL on blur/enter)
   const [addressInput, setAddressInput] = useState(addressParam)
   const [collectionInput, setCollectionInput] = useState(collectionParam)
@@ -72,16 +80,35 @@ export default function Offers() {
 
   // Resolve ENS name for address filter
   useEffect(() => {
-    if (!addressParam) { setResolvedAddress(''); return }
-    if (addressParam.startsWith('0x') && addressParam.length === 42) {
-      setResolvedAddress(addressParam.toLowerCase())
+    const value = addressParam.trim()
+    if (!value) {
+      setResolvedAddress('')
+      setAddressFilterStatus('idle')
+      return
+    }
+    if (isAddress(value)) {
+      setResolvedAddress(value.toLowerCase())
+      setAddressFilterStatus('valid')
+      return
+    }
+    if (value.startsWith('0x')) {
+      setResolvedAddress('')
+      setAddressFilterStatus('invalid')
       return
     }
     // Try ENS resolution
     let cancelled = false
-    resolveENSName(addressParam).then((addr) => {
+    setResolvedAddress('')
+    setAddressFilterStatus('resolving')
+    resolveENSName(value).then((addr) => {
       if (cancelled) return
-      setResolvedAddress(addr ? addr.toLowerCase() : '')
+      if (addr && isAddress(addr)) {
+        setResolvedAddress(addr.toLowerCase())
+        setAddressFilterStatus('valid')
+      } else {
+        setResolvedAddress('')
+        setAddressFilterStatus('invalid')
+      }
     })
     return () => { cancelled = true }
   }, [addressParam])
@@ -96,10 +123,18 @@ export default function Offers() {
     async function load() {
       try {
         const chainResults = await Promise.all(
-          DEPLOYED_CHAINS.map(async (cid) => {
+          SELECTABLE_CHAINS.map(async (cid) => {
             const registrations = await queryOrderEvents(cid, ZONE_ADDRESSES[cid])
             const isPartial = registrations._partial
             const tagged = registrations.map((r) => ({ ...r, chainId: cid }))
+
+            const uniqueMakers = [...new Set(tagged.map((r) => r.maker))]
+            const counterMap = {}
+            await Promise.all(
+              uniqueMakers.map(async (maker) => {
+                try { counterMap[maker] = await getCounter(cid, maker) } catch { /* leave undefined */ }
+              })
+            )
 
             const BATCH_SIZE = 3
             const enriched = []
@@ -111,7 +146,7 @@ export default function Offers() {
                   try {
                     const seaportStatus = await getOrderStatus(cid, reg.orderHash)
                     const endTime = reg.order?.parameters?.endTime
-                    const status = deriveOrderStatus(seaportStatus, endTime)
+                    const status = deriveOrderStatus(seaportStatus, endTime, counterMap[reg.maker], reg.order?.parameters?.counter)
                     return { ...reg, status }
                   } catch {
                     return { ...reg, status: 'unknown' }
@@ -130,6 +165,7 @@ export default function Offers() {
 
         const allOrders = chainResults.flat()
         allOrders.reverse()
+        allOrders.push(...getArchivedOfferRecords())
         const anyPartial = chainResults.some((r) => r._partial)
         if (anyPartial) setPartial(true)
         setOrders(allOrders)
@@ -144,48 +180,58 @@ export default function Offers() {
     return () => { cancelled = true }
   }, [])
 
-  // Check maker holdings for open offers
-  useEffect(() => {
-    const openOrders = orders.filter((o) => o.status === 'open' && o.order?.parameters)
-    if (openOrders.length === 0) return
-
-    let cancelled = false
-
-    ;(async () => {
-      const BATCH = 5
-      const checks = []
-      for (let i = 0; i < openOrders.length; i += BATCH) {
-        if (cancelled) return
-        const batch = openOrders.slice(i, i + BATCH)
-        const results = await Promise.all(
-          batch.map(async (o) => {
-            const results = await checkHoldings(o.chainId, o.maker, o.order.parameters.offer)
-            return { orderHash: o.orderHash, makerHoldsAll: results.every((h) => h.held) }
-          })
-        )
-        checks.push(...results)
-      }
-      return checks
-    })().then((checks) => {
-      if (!checks) return
-      if (cancelled) return
-      const holdingsMap = {}
-      for (const c of checks) holdingsMap[c.orderHash] = c.makerHoldsAll
-      setOrders((prev) => prev.map((o) => ({
-        ...o,
-        makerHoldsAll: holdingsMap[o.orderHash] ?? true,
-      })))
-    })
-
-    return () => { cancelled = true }
-  }, [orders.length]) // re-run when orders finish loading
-
   // Reset pagination when filters change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
-  }, [chainFilter, category, resolvedAddress, collectionParam])
+  }, [chainFilter, category, resolvedAddress, addressFilterStatus, collectionParam])
+
+  // Check maker holdings for open offers after the order statuses have loaded.
+  useEffect(() => {
+    const pending = orders.filter((order) =>
+      order.status === 'open' &&
+      order.order?.parameters?.offer &&
+      !order.makerAvailability
+    )
+    if (pending.length === 0) return undefined
+
+    let cancelled = false
+
+    async function checkPending() {
+      const BATCH_SIZE = 5
+      const results = []
+      for (let i = 0; i < pending.length; i += BATCH_SIZE) {
+        if (cancelled) return
+        const batch = pending.slice(i, i + BATCH_SIZE)
+        const checks = await Promise.all(batch.map(async (order) => {
+          const availability = await checkMakerOfferAvailability(
+            order.chainId,
+            order.maker,
+            order.order.parameters.offer
+          ).catch(() => ({ status: 'unknown', reason: 'Unable to verify maker holdings' }))
+          return { key: orderAvailabilityKey(order), availability }
+        }))
+        results.push(...checks)
+      }
+
+      if (cancelled) return
+      const byOrder = new Map(results.map(({ key, availability }) => [key, availability]))
+      setOrders((prev) => prev.map((order) => {
+        const availability = byOrder.get(orderAvailabilityKey(order))
+        if (!availability) return order
+        return {
+          ...order,
+          makerAvailability: availability.status,
+          makerAvailabilityReason: availability.reason,
+        }
+      }))
+    }
+
+    checkPending()
+    return () => { cancelled = true }
+  }, [orders])
 
   const normalizedCollection = collectionParam ? collectionParam.toLowerCase() : ''
+  const addressFilterActive = Boolean(addressParam.trim())
 
   const filtered = orders.filter((o) => {
     // Chain filter
@@ -197,7 +243,8 @@ export default function Offers() {
     }
 
     // Address filter — match maker or taker
-    if (resolvedAddress) {
+    if (addressFilterActive) {
+      if (addressFilterStatus !== 'valid' || !resolvedAddress) return false
       const isMaker = o.maker.toLowerCase() === resolvedAddress
       const isTaker = o.taker !== ZERO_ADDRESS && o.taker.toLowerCase() === resolvedAddress
       if (!isMaker && !isTaker) return false
@@ -218,11 +265,10 @@ export default function Offers() {
   })
 
   if (category === 'open') {
-    // Sort: valid first, then by soonest expiration
+    // Sort open offers by holdings availability, then soonest expiration.
     filtered.sort((a, b) => {
-      const aValid = a.makerHoldsAll !== false ? 1 : 0
-      const bValid = b.makerHoldsAll !== false ? 1 : 0
-      if (aValid !== bValid) return bValid - aValid
+      const availabilityDiff = makerAvailabilityRank(b) - makerAvailabilityRank(a)
+      if (availabilityDiff) return availabilityDiff
       const aEnd = Number(a.order?.parameters?.endTime || 0)
       const bEnd = Number(b.order?.parameters?.endTime || 0)
       if (!aEnd && !bEnd) return 0
@@ -251,7 +297,7 @@ export default function Offers() {
           Chain
           <select value={chainFilter} onChange={(e) => setParam('chain', e.target.value)}>
             <option value="all">All Chains</option>
-            {DEPLOYED_CHAINS.map((id) => (
+            {SELECTABLE_CHAINS.map((id) => (
               <option key={id} value={id}>{CHAINS[id]?.name || `Chain ${id}`}</option>
             ))}
           </select>
@@ -300,16 +346,26 @@ export default function Offers() {
 
       {loading && <p className="text-muted">Loading offers...</p>}
       {error && <p className="form-error">{error}</p>}
+      {!loading && !error && addressFilterStatus === 'resolving' && (
+        <p className="text-muted">Resolving address filter...</p>
+      )}
+      {!loading && !error && addressFilterStatus === 'invalid' && (
+        <p className="form-error">Enter a valid address, ENS name, or .wei name.</p>
+      )}
       {partial && !loading && <p className="text-muted">Only showing recent offers. Older offers may be missing.</p>}
 
-      {!loading && !error && filtered.length === 0 && (
+      {!loading && !error && addressFilterStatus !== 'resolving' && addressFilterStatus !== 'invalid' && filtered.length === 0 && (
         <p className="text-muted">No offers found.</p>
       )}
 
       {!loading && visible.length > 0 && (
         <div className="offers-list">
           {visible.map((order) => (
-            <OfferCard key={order.orderHash} order={order} invalidHoldings={order.makerHoldsAll === false} />
+            <OfferCard
+              key={`${order.chainId}:${order.orderHash}`}
+              order={order}
+              invalidHoldings={order.makerAvailability === 'missing'}
+            />
           ))}
         </div>
       )}
@@ -367,7 +423,9 @@ function OfferCard({ order, invalidHoldings }) {
           {order.status}
         </span>
         {invalidHoldings && (
-          <span className="offer-card-warning">Maker no longer holds assets</span>
+          <span className="offer-card-warning">
+            Maker no longer holds assets
+          </span>
         )}
       </div>
     </Link>
@@ -409,14 +467,16 @@ function AssetSummary({ items, chainId }) {
 
 function NFTAssetItem({ chainId, token, tokenId, itemType, amount }) {
   const [meta, setMeta] = useState(null)
+  const isCriteria = itemType === ItemType.ERC721_WITH_CRITERIA || itemType === ItemType.ERC1155_WITH_CRITERIA
 
   useEffect(() => {
+    if (isCriteria) return
     let cancelled = false
     fetchMetadata(chainId, token, tokenId, itemType === 3 ? 1 : 0).then((m) => {
       if (!cancelled) setMeta(m)
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [chainId, token, tokenId, itemType])
+  }, [chainId, token, tokenId, itemType, isCriteria])
 
   return (
     <span className="offer-asset-item">
@@ -424,10 +484,10 @@ function NFTAssetItem({ chainId, token, tokenId, itemType, amount }) {
         {meta?.image ? (
           <img src={meta.image} alt={meta.name || ''} loading="lazy" />
         ) : (
-          <span className="offer-asset-thumb-placeholder">?</span>
+          <span className="offer-asset-thumb-placeholder">{isCriteria ? 'Any' : '?'}</span>
         )}
       </span>
-      <span>{meta?.name || `#${tokenId}`}{Number(amount) > 1 && ` x${amount}`}</span>
+      <span>{isCriteria ? 'Any token' : (meta?.name || `#${tokenId}`)}{Number(amount) > 1 && ` x${amount}`}</span>
     </span>
   )
 }

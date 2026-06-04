@@ -9,7 +9,7 @@ Peer-to-peer OTC swap site for NFTs and tokens. No backend, no fees, no middlema
 - Optional taker restriction, expiration, and memo
 
 ## Supported chains
-Ethereum, Base, Polygon, Ink
+Ethereum, Base, Polygon
 
 ## How it works
 1. Connect wallet, choose counterparty (or leave open)
