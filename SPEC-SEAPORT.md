@@ -420,6 +420,8 @@ const { executeAllActions } = await seaport.createOrder({
 const order = await executeAllActions()  // Signs the order (no gas)
 ```
 
+**Future hardening — canonical pre-sign verification (non-blocking):** Upgrade to `seaport-js` v4.2.0 or later and inspect the SDK's frozen `orderComponents` before requesting the Seaport signature. Compare every canonical field against the terms reviewed in the create wizard — including assets, amounts, consideration recipients, taker restriction, zone, order type, start and end times, `zoneHash`, conduit key, salt, and counter — and fail closed on any mismatch. The exact inspected object must be the object subsequently signed; no layer may clone, replace, or mutate the order between verification and signing. OTCRegistry's registration checks remain an independent onchain safeguard, but they do not prove that all otherwise-valid signed terms match what the maker saw in the frontend.
+
 ### 4.2 Fulfilling an Order
 
 No-tip exact-item orders use `fulfillOrder`:

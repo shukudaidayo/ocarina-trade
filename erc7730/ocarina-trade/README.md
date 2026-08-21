@@ -10,7 +10,7 @@ https://github.com/ethereum/clear-signing-erc7730-registry
 
 - `calldata-OTCRegistry.json` describes `registerOrder(OrderRegistration)` transactions.
 - `eip712-OTCRegistry.json` describes the OTCRegistry maker registration signature and optional tip authorization signature.
-- `tests/` contains reference samples in the format expected by the ERC-7730 registry.
+- `testsv2/` contains reference samples in the current v2 format expected by the ERC-7730 registry.
 
 The JSON files intentionally keep registry-relative `$schema` paths such as `../../specs/erc7730-v2.schema.json`, matching the upstream PR package. For validation, run the official tooling from a checkout of `clear-signing-erc7730-registry` after copying or syncing these files into `registry/ocarina-trade/`:
 
@@ -28,7 +28,7 @@ When the upstream PR changes, mirror the four JSON files here:
 
 - `calldata-OTCRegistry.json`
 - `eip712-OTCRegistry.json`
-- `tests/calldata-OTCRegistry.tests.json`
-- `tests/eip712-OTCRegistry.tests.json`
+- `testsv2/calldata-OTCRegistry.tests.json`
+- `testsv2/eip712-OTCRegistry.tests.json`
 
 Do not copy this README into the upstream registry folder.
