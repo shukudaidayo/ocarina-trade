@@ -34,8 +34,9 @@ sequenceDiagram
     Note over F,W: domain: {name: "OTCRegistry", version: "1", chainId, zone}<br/>struct: {orderHash, seaportSignature, memo}
     W-->>F: Registration signature
 
-    F->>W: registerOrder(reg)
-    W->>Z: registerOrder tx (submitter can be maker or a relayer)
+    F->>W: Submit transaction containing registerOrder(reg)
+    W->>Z: registerOrder call (top-level or nested)
+    Note over W,Z: Delegated accounts and smart wallets may route the call<br/>through an execution contract; the submitter can also be a relayer.
     Note over F,W: If the register prompt stalls before a tx hash,<br/>the checklist can restart. After a tx hash,<br/>the UI shows View transaction / Check registration.
     Z->>Z: Check memo length ≤ 280
     Z->>Z: Check startTime <= block.timestamp <= endTime
@@ -70,10 +71,19 @@ sequenceDiagram
 sequenceDiagram
     participant F as Frontend
     participant R as RPC
+    participant B as Blockscout
     participant S as Seaport
 
     F->>R: getTransactionReceipt(txHash)
-    R-->>F: Receipt with OrderRegistered event
+    alt Receipt available
+        R-->>F: Receipt logs
+    else Receipt unavailable or archive-limited
+        R-->>F: Error or null
+        F->>B: Fetch logs for txHash
+        B-->>F: Transaction logs
+    end
+
+    Note over F,B: txHash is the outer transaction hash; registerOrder<br/>may be a nested call in delegated/smart-wallet execution.
 
     F->>F: Require log.address == canonical OTCRegistry for chainId
     F->>F: Parse event → orderHash, maker, taker, components, memo

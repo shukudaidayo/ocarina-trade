@@ -93,7 +93,7 @@ For a simple NFT-for-NFT trade:
 
 3. **Order is registered onchain** via `OTCRegistry.registerOrder()` — one transaction that publishes the order for the offers page and makes it eligible to settle through OTCRegistry.
 
-4. **Maker shares a URL** containing the chain ID and registration tx hash.
+4. **Maker shares a URL** containing the chain ID and the hash of the transaction that emitted the registration event. The transaction may call `OTCRegistry.registerOrder()` directly or reach it through delegated/smart-wallet execution.
 
 5. **Taker opens the URL**, reviews the trade, resolves any criteria items to concrete token IDs, approves their assets to Seaport, optionally authorizes any explicit cash tip, and fulfills the order — one onchain transaction that atomically exchanges all assets. Standard no-tip exact-item orders use `fulfillOrder`; criteria orders and tipped orders use `fulfillAdvancedOrder`.
 
@@ -247,7 +247,7 @@ Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
    - Full details in `SPEC-CREATE-FLOW.md`
 
 3. **`/offer/{chainId}/{txHash}`** - View and accept an offer
-   - For current OTCRegistry offers, fetch `OrderRegistered` event from the registration tx receipt
+   - For current OTCRegistry offers, fetch the `OrderRegistered` log from the transaction identified by `txHash`: read the transaction receipt from the configured RPC first, then fall back to Blockscout's transaction-logs API if the receipt is unavailable
    - For archived non-open OTCZone offers, load the normalized local archive record by `{chainId, txHash}` without reading the deprecated OTCZone contract
    - Reconstruct the validated Seaport order from the emitted `OrderComponents` with empty signature `0x` for OTCRegistry offers, or from the archived signed order for legacy OTCZone offers
    - Display both sides with large NFT images, small logos for cash assets, OpenSea/Uniswap links
@@ -282,7 +282,7 @@ Path-based routing with Cloudflare Pages SPA fallback (`_redirects`).
 
 #### URL Encoding
 
-Since the validated order parameters are stored onchain in the `OrderRegistered` event, the URL only needs the chain ID and the registration transaction hash:
+Since the validated order parameters are stored onchain in the `OrderRegistered` event, the URL only needs the chain ID and the hash of the transaction containing that event:
 
 ```
 /offer/{chainId}/{txHash}
@@ -290,7 +290,7 @@ Since the validated order parameters are stored onchain in the `OrderRegistered`
 
 Example: `/offer/1/0x7bd391346f238fc36c19291a1f9678773ca5a47a475814592194802cbec983cb`
 
-The offer page first checks the local legacy archive for an exact `{chainId, txHash}` match. Archived records are already non-open and are displayed read-only. If no archive record exists, the page fetches the tx receipt, parses the `OrderRegistered` event to extract the order parameters, and has everything needed to display the offer and call `fulfillOrder` with `signature: "0x"` because registration already validated the order hash in Seaport. The parser must only accept an `OrderRegistered` log whose `log.address` equals the canonical `OTCRegistry` address for the URL's `chainId`; same-ABI events from any other contract are ignored. After decoding, the frontend also rechecks that the order's `zone` is the same registry address, that `orderType` is `FULL_RESTRICTED`, and that seaport-js derives the emitted `orderHash` from the decoded parameters. Uses path-based routing (not hash routing) so that crawlers can read the URL for OG meta tags.
+The transaction identified by `txHash` does not need to target OTCRegistry at its top level. Delegated accounts and smart wallets may call `registerOrder` internally; the outer transaction hash remains the canonical onchain reference because its logs contain the registry event. The offer page first checks the local legacy archive for an exact `{chainId, txHash}` match. Archived records are already non-open and are displayed read-only. If no archive record exists, the page fetches the transaction receipt from the configured RPC. If the RPC cannot serve the historical receipt, it falls back to Blockscout's v2 transaction-logs endpoint for the same hash. It parses the `OrderRegistered` event to extract the order parameters and has everything needed to display the offer and call `fulfillOrder` with `signature: "0x"` because registration already validated the order hash in Seaport. Under either retrieval path, the parser must only accept an `OrderRegistered` log whose `log.address` equals the canonical `OTCRegistry` address for the URL's `chainId`; same-ABI events from any other contract are ignored. After decoding, the frontend also rechecks that the order's `zone` is the same registry address, that `orderType` is `FULL_RESTRICTED`, and that seaport-js derives the emitted `orderHash` from the decoded parameters. Uses path-based routing (not hash routing) so that crawlers can read the URL for OG meta tags.
 
 #### Order Discovery / Offers Page
 
@@ -578,7 +578,7 @@ All results cached in `sessionStorage` to avoid redundant fetches.
 ### Accepting a Trade
 
 1. Counterparty opens the shared link
-2. UI fetches `OrderRegistered` event from the registration tx receipt and extracts the validated order parameters
+2. UI fetches the `OrderRegistered` log from the transaction identified by the URL, using the RPC receipt first and Blockscout transaction logs as a fallback, and extracts the validated order parameters
 3. UI validates: checks Seaport for order status, checks expiration, and reconstructs the Seaport order from the registry event with `signature: "0x"`. The order hash's Seaport validation status plus the registry event are the trust anchors.
 4. UI displays all assets with verification indicators
 5. UI checks onchain holdings for both maker (offer) and taker (consideration), flagging any missing assets
@@ -735,8 +735,8 @@ Alchemy-specific config lives in `src/lib/alchemy.js` and `src/lib/metadata.js`:
 ### External Services
 - **Reown AppKit**: Wallet connection (requires project ID via `VITE_REOWN_PROJECT_ID`)
 - **Alchemy NFT v3 API**: Collection enumeration (`getContractsForOwner`, includes `isSpam` flag for spam detection) and per-collection NFT fetching (`getNFTsForOwner`) for the wallet picker on Alchemy-backed chains, plus single-NFT metadata fallback (`getNFTMetadata`) on the trade page (requires API key via `VITE_ALCHEMY_API_KEY`). The app remains functional without it — manual asset entry is always available, and Blockscout-backed chains can still enumerate wallet NFTs.
-- **Blockscout APIs**: Logs API for `OrderRegistered` discovery and filled/cancelled transaction lookup, account transaction API as a secondary discovery path, and v2 NFT endpoints for wallet holdings on chains without Alchemy NFT API support.
-- **Blockchain data**: Public RPC endpoints for receipts, order status, counters, holdings, approvals, metadata fallback calls, and partial event discovery when Blockscout is unavailable.
+- **Blockscout APIs**: Logs API for `OrderRegistered` discovery and filled/cancelled transaction lookup, v2 per-transaction logs as a fallback when a public RPC cannot serve an offer's historical receipt, account transaction API as a secondary discovery path, and v2 NFT endpoints for wallet holdings on chains without Alchemy NFT API support.
+- **Blockchain data**: Public RPC endpoints for receipts (with Blockscout fallback for offer transaction logs), order status, counters, holdings, approvals, metadata fallback calls, and partial event discovery when Blockscout is unavailable.
 - **NFT metadata fallback**: On-chain tokenURI + public IPFS gateways
 - **Hosting**: Any static file host
 - **Verified token list**: Bundled static JSON file, supplemented by Alchemy's OpenSea safelist status for runtime verification of unlisted contracts
@@ -768,7 +768,7 @@ The only custom contract is OTCRegistry, deployed once per chain. Foundry is nee
 
 ## 12. Open Questions
 
-1. ~~**URL length**~~: **Resolved** — URLs use the `/offer/{chainId}/{txHash}` format. The validated order parameters are stored onchain in the `OrderRegistered` event and fetched via tx receipt.
+1. ~~**URL length**~~: **Resolved** — URLs use the `/offer/{chainId}/{txHash}` format. The validated order parameters are stored onchain in the `OrderRegistered` event and fetched from the transaction's logs via an RPC receipt or Blockscout fallback.
 
 2. ~~**Offers page without events**~~: **Resolved** — the OTCRegistry contract emits `OrderRegistered` events, providing an onchain index of published orders. The offers page queries these events and cross-references with Seaport for order status.
 

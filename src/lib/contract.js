@@ -85,6 +85,47 @@ function blockscoutNumber(value) {
   return Number(value)
 }
 
+async function getBlockscoutTransactionLogs(chain, txHash) {
+  const origin = new URL(chain.blockscoutApi).origin
+  const url = `${origin}/api/v2/transactions/${txHash}/logs`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Blockscout transaction logs request failed (${res.status})`)
+
+  const data = await res.json()
+  if (!Array.isArray(data.items)) throw new Error('Blockscout returned invalid transaction logs')
+
+  return data.items.flatMap((log) => {
+    const address = typeof log.address === 'string' ? log.address : log.address?.hash
+    if (!address || !Array.isArray(log.topics) || typeof log.data !== 'string') return []
+
+    // Blockscout pads the topics array with trailing nulls; ethers expects only
+    // the topics that were actually emitted.
+    const topics = [...log.topics]
+    while (topics.at(-1) === null) topics.pop()
+
+    return [{
+      address,
+      topics,
+      data: log.data,
+      index: blockscoutNumber(log.index),
+      transactionHash: log.transaction_hash || txHash,
+    }]
+  })
+}
+
+async function getTransactionLogs(chain, txHash) {
+  try {
+    const provider = new JsonRpcProvider(chain.rpcUrl)
+    const receipt = await provider.getTransactionReceipt(txHash)
+    if (receipt) return receipt.logs
+  } catch (err) {
+    if (!chain.blockscoutApi) throw err
+  }
+
+  if (!chain.blockscoutApi) throw new Error('Transaction not found')
+  return getBlockscoutTransactionLogs(chain, txHash)
+}
+
 const APPROVAL_ABI = [
   'function isApprovedForAll(address owner, address operator) view returns (bool)',
   'function setApprovalForAll(address operator, bool approved)',
@@ -350,12 +391,10 @@ export async function getOrderFromTx(chainId, txHash) {
   const expectedZone = zoneAddress.toLowerCase()
 
   return retry(async () => {
-    const provider = new JsonRpcProvider(chain.rpcUrl)
-    const receipt = await provider.getTransactionReceipt(txHash)
-    if (!receipt) throw new Error('Transaction not found')
+    const logs = await getTransactionLogs(chain, txHash)
 
     const iface = new Interface(ZONE_ABI)
-    for (const log of receipt.logs) {
+    for (const log of logs) {
       if (log.address.toLowerCase() !== expectedZone) continue
       let parsed
       try { parsed = iface.parseLog(log) } catch { continue }
